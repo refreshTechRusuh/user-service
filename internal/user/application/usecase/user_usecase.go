@@ -13,16 +13,20 @@ import (
 	"github.com/refreshTechRusuh/user-service/internal/user/domain/entity"
 	"github.com/refreshTechRusuh/user-service/internal/user/port/outbound"
 	"github.com/refreshTechRusuh/user-service/pkg/apperror"
+	"github.com/refreshTechRusuh/user-service/pkg/token"
 )
 
 // UserUsecase memegang dependency (lewat interface outbound, bukan konkret).
+// tokenGen: menerbitkan/verifikasi JWT. tokenStore: denylist refresh token (logout).
 type UserUsecase struct {
-	repo outbound.IUserRepository
+	repo       outbound.IUserRepository
+	tokenGen   *token.Generator
+	tokenStore outbound.ITokenStore
 }
 
-// NewUserUsecase menyuntik repository saat wiring (di delivery).
-func NewUserUsecase(repo outbound.IUserRepository) *UserUsecase {
-	return &UserUsecase{repo: repo}
+// NewUserUsecase menyuntik repository + generator token + token store saat wiring.
+func NewUserUsecase(repo outbound.IUserRepository, tokenGen *token.Generator, tokenStore outbound.ITokenStore) *UserUsecase {
+	return &UserUsecase{repo: repo, tokenGen: tokenGen, tokenStore: tokenStore}
 }
 
 // Register mendaftarkan akun baru.
@@ -63,4 +67,75 @@ func (u *UserUsecase) Register(ctx context.Context, req dto.RegisterRequest) (dt
 		Email:  user.Email,
 		Role:   user.Role,
 	}, nil
+}
+
+// Login memverifikasi kredensial lalu menerbitkan authToken + refreshToken (JWT).
+func (u *UserUsecase) Login(ctx context.Context, req dto.LoginRequest) (dto.LoginResponse, error) {
+	user, found, err := u.repo.FindByEmail(ctx, req.Email)
+	if err != nil {
+		return dto.LoginResponse{}, apperror.Internal(err)
+	}
+	// Email tidak ada → pakai InvalidCredentials (JANGAN bocorkan "email tak terdaftar").
+	if !found {
+		return dto.LoginResponse{}, apperror.InvalidCredentials()
+	}
+	// Password salah → juga InvalidCredentials (pesan sama dgn email tak ada → anti-enumerasi).
+	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
+		return dto.LoginResponse{}, apperror.InvalidCredentials()
+	}
+
+	// Kredensial valid → terbitkan token.
+	authToken, err := u.tokenGen.GenerateAuthToken(user.ID, string(user.Role))
+	if err != nil {
+		return dto.LoginResponse{}, apperror.Internal(err)
+	}
+	refreshToken, err := u.tokenGen.GenerateRefreshToken(user.ID)
+	if err != nil {
+		return dto.LoginResponse{}, apperror.Internal(err)
+	}
+
+	return dto.LoginResponse{
+		AuthToken:    authToken,
+		RefreshToken: refreshToken,
+		Role:         user.Role,
+		ExpiresIn:    u.tokenGen.AccessTTLSeconds(),
+	}, nil
+}
+
+// Me mengembalikan profil user berdasarkan userID (dari authToken, di-set middleware).
+func (u *UserUsecase) Me(ctx context.Context, userID string) (dto.MeResponse, error) {
+	user, found, err := u.repo.FindByID(ctx, userID)
+	if err != nil {
+		return dto.MeResponse{}, apperror.Internal(err)
+	}
+	if !found {
+		// Token valid tapi user sudah tak ada (dihapus) → perlakukan sbg unauthorized.
+		return dto.MeResponse{}, apperror.Unauthorized("Sesi tidak valid")
+	}
+	return dto.MeResponse{
+		UserID: user.ID,
+		Email:  user.Email,
+		Role:   user.Role,
+	}, nil
+}
+
+// Logout mencabut (revoke) refresh token: masukkan ke denylist Redis dengan TTL
+// = sisa umur token. Idempoten — memanggil berkali-kali tetap sukses.
+func (u *UserUsecase) Logout(ctx context.Context, req dto.LogoutRequest) error {
+	if req.RefreshToken == "" {
+		return apperror.Validation("refreshToken wajib diisi")
+	}
+	// Verifikasi dulu: hanya token kita yang sah yang boleh (dan perlu) dicabut.
+	claims, err := u.tokenGen.VerifyRefreshToken(req.RefreshToken)
+	if err != nil {
+		// Token tak valid/kedaluwarsa → anggap sudah "tidak berlaku" → sukses idempoten.
+		return nil
+	}
+	// TTL = sisa waktu sampai exp; setelah itu key denylist auto-hapus.
+	ttl := time.Until(claims.ExpiresAt.Time)
+	// tokenID = refresh token itu sendiri (unik per sesi).
+	if err := u.tokenStore.Revoke(ctx, req.RefreshToken, ttl); err != nil {
+		return apperror.Internal(err)
+	}
+	return nil
 }

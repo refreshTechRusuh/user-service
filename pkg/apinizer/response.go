@@ -1,5 +1,7 @@
 // Package apinizer menyediakan envelope response standar:
-//   { status, message, data }  — status "00000" sukses, string kode HTTP gagal.
+//
+//	{ status, message, data }  — status "00000" sukses, string kode HTTP gagal.
+//
 // Pola mengikuti event-service: Success/Created + WriteError (map apperror).
 package apinizer
 
@@ -56,7 +58,7 @@ func WriteError(w http.ResponseWriter, err error) {
 // mapErrorCode memetakan ErrorCode ke HTTP status.
 func mapErrorCode(code apperror.ErrorCode) int {
 	switch code {
-	case apperror.ErrValidation:
+	case apperror.ErrValidation, apperror.ErrNIKInvalid:
 		return http.StatusBadRequest
 	case apperror.ErrUnauthorized, apperror.ErrInvalidCredentials,
 		apperror.ErrTokenInvalid, apperror.ErrTokenExpired:
@@ -65,7 +67,7 @@ func mapErrorCode(code apperror.ErrorCode) int {
 		return http.StatusForbidden
 	case apperror.ErrNotFound:
 		return http.StatusNotFound
-	case apperror.ErrEmailTaken:
+	case apperror.ErrEmailTaken, apperror.ErrMemberDuplicate:
 		return http.StatusConflict
 	default:
 		return http.StatusInternalServerError

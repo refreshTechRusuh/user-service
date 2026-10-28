@@ -16,6 +16,7 @@ import (
 	"github.com/refreshTechRusuh/user-service/internal/config"
 	"github.com/refreshTechRusuh/user-service/internal/delivery"
 	pkgdb "github.com/refreshTechRusuh/user-service/pkg/db"
+	pkgredis "github.com/refreshTechRusuh/user-service/pkg/redis"
 )
 
 func main() {
@@ -39,8 +40,16 @@ func main() {
 	}
 	defer pool.Close()
 
+	// 2b. Koneksi Redis (untuk denylist refresh-token / logout).
+	rdb, err := pkgredis.NewClient(rootCtx, cfg.Redis)
+	if err != nil {
+		slog.Error("gagal konek redis", "err", err)
+		os.Exit(1)
+	}
+	defer func() { _ = rdb.Close() }()
+
 	// 3. Rakit server (wiring semua lapis) + pasang ke http.Server.
-	mux := delivery.New(pool)
+	mux := delivery.New(cfg, pool, rdb)
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.App.Port),
 		Handler:           mux,

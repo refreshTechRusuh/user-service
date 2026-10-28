@@ -12,4 +12,4 @@ mod-tidy:
 golint:
 	golangci-lint run --timeout 5m
 docker-build: build
-	docker build -f Dockerfile -t dukcapil-mock:latest .
+	docker build -f Dockerfile -t user-service:latest .

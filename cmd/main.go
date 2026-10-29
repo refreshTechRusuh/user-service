@@ -49,7 +49,11 @@ func main() {
 	defer func() { _ = rdb.Close() }()
 
 	// 3. Rakit server (wiring semua lapis) + pasang ke http.Server.
-	mux := delivery.New(cfg, pool, rdb)
+	mux, err := delivery.New(rootCtx, cfg, pool, rdb)
+	if err != nil {
+		slog.Error("gagal merakit service", "err", err)
+		os.Exit(1)
+	}
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.App.Port),
 		Handler:           mux,

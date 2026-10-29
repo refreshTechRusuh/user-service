@@ -11,6 +11,7 @@ type ErrorCode string
 const (
 	// 400
 	ErrValidation ErrorCode = "VALIDATION_ERROR"
+	ErrNIKInvalid ErrorCode = "NIK_INVALID"
 
 	// 401
 	ErrUnauthorized       ErrorCode = "UNAUTHORIZED"
@@ -25,7 +26,8 @@ const (
 	ErrNotFound ErrorCode = "NOT_FOUND"
 
 	// 409
-	ErrEmailTaken ErrorCode = "EMAIL_TAKEN"
+	ErrEmailTaken      ErrorCode = "EMAIL_TAKEN"
+	ErrMemberDuplicate ErrorCode = "MEMBER_DUPLICATE"
 
 	// 500
 	ErrInternal ErrorCode = "INTERNAL_ERROR"
@@ -58,10 +60,16 @@ func (e *AppError) Unwrap() error { return e.cause }
 
 // ---- Constructor helpers -----------------------------------------------
 
-func Validation(msg string) *AppError      { return New(ErrValidation, msg) }
-func Unauthorized(msg string) *AppError    { return New(ErrUnauthorized, msg) }
-func InvalidCredentials() *AppError        { return New(ErrInvalidCredentials, "Email atau password salah") }
-func Forbidden() *AppError                 { return New(ErrForbidden, "Akses ditolak") }
-func NotFound(resource string) *AppError   { return New(ErrNotFound, resource+" tidak ditemukan") }
-func EmailTaken() *AppError                { return New(ErrEmailTaken, "Email sudah terdaftar") }
-func Internal(cause error) *AppError       { return Wrap(ErrInternal, "Terjadi kesalahan pada server", cause) }
+func Validation(msg string) *AppError    { return New(ErrValidation, msg) }
+func Unauthorized(msg string) *AppError  { return New(ErrUnauthorized, msg) }
+func InvalidCredentials() *AppError      { return New(ErrInvalidCredentials, "Email atau password salah") }
+func Forbidden() *AppError               { return New(ErrForbidden, "Akses ditolak") }
+func NotFound(resource string) *AppError { return New(ErrNotFound, resource+" tidak ditemukan") }
+func EmailTaken() *AppError              { return New(ErrEmailTaken, "Email sudah terdaftar") }
+func NIKInvalid() *AppError {
+	return New(ErrNIKInvalid, "NIK tidak valid: data tidak cocok dengan Dukcapil")
+}
+func MemberDuplicate() *AppError { return New(ErrMemberDuplicate, "NIK ini sudah tersimpan") }
+func Internal(cause error) *AppError {
+	return Wrap(ErrInternal, "Terjadi kesalahan pada server", cause)
+}

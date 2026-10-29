@@ -21,4 +21,7 @@ type IUserRepository interface {
 	//   - error teknis  -> (zero, false, err)
 	// Dipakai untuk cek email sebelum register, dan untuk login nanti.
 	FindByEmail(ctx context.Context, email string) (user entity.User, found bool, err error)
+
+	// FindByID mencari user by id (dipakai GET /auth/me). Pola comma-ok sama.
+	FindByID(ctx context.Context, id string) (user entity.User, found bool, err error)
 }

@@ -2,6 +2,7 @@
 // Pola sama dengan dukcapil-mock, tapi user-service butuh dua bagian tambahan:
 //   - JWT   : untuk menerbitkan & memverifikasi authToken/refreshToken
 //   - Redis : untuk menyimpan state refresh-token (logout = revoke)
+//
 // Pola mengikuti service lain (event-service) agar konsisten lintas tim.
 package config
 
@@ -17,11 +18,12 @@ import (
 
 // Config = seluruh konfigurasi service, dikelompokkan per bagian.
 type Config struct {
-	App   AppConfig
-	Log   LogConfig
-	DB    DBConfig
-	JWT   JWTConfig
-	Redis RedisConfig
+	App      AppConfig
+	Log      LogConfig
+	DB       DBConfig
+	JWT      JWTConfig
+	Redis    RedisConfig
+	Dukcapil DukcapilConfig
 }
 
 type AppConfig struct {
@@ -62,6 +64,12 @@ type RedisConfig struct {
 	DB       int
 }
 
+// DukcapilConfig = alamat service dukcapil-mock yang dipanggil user-service.
+type DukcapilConfig struct {
+	BaseURL        string
+	TimeoutSeconds int
+}
+
 // Load membaca .env (bila ada) lalu environment, dengan default aman untuk dev.
 func Load() (*Config, error) {
 	_ = godotenv.Load() // .env opsional; abaikan error bila file tak ada
@@ -96,6 +104,10 @@ func Load() (*Config, error) {
 			Addr:     getEnv("REDIS_ADDR", "localhost:6379"),
 			Password: getEnv("REDIS_PASSWORD", ""),
 			DB:       getEnvInt("REDIS_DB", 0),
+		},
+		Dukcapil: DukcapilConfig{
+			BaseURL:        getEnv("DUKCAPIL_BASE_URL", "http://localhost:8085"),
+			TimeoutSeconds: getEnvInt("DUKCAPIL_TIMEOUT_SECONDS", 5),
 		},
 	}
 	return cfg, nil

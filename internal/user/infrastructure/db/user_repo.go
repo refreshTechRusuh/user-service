@@ -48,6 +48,25 @@ func (r *UserRepository) FindByEmail(ctx context.Context, email string) (entity.
 	return res, true, nil
 }
 
+// FindByID mencari satu user berdasarkan id (untuk /auth/me).
+func (r *UserRepository) FindByID(ctx context.Context, id string) (entity.User, bool, error) {
+	const q = `
+		SELECT id, email, password_hash, role, created_at
+		FROM app_user
+		WHERE id = $1`
+
+	var res entity.User
+	err := r.pool.QueryRow(ctx, q, id).
+		Scan(&res.ID, &res.Email, &res.PasswordHash, &res.Role, &res.CreatedAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return entity.User{}, false, nil
+		}
+		return entity.User{}, false, fmt.Errorf("query app_user by id: %w", err)
+	}
+	return res, true, nil
+}
+
 // Create menyimpan user baru.
 // Bila email sudah dipakai (UNIQUE violation 23505) -> apperror.EmailTaken()
 // sebagai benteng terakhir, walau usecase sudah cek lewat FindByEmail.

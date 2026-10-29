@@ -18,4 +18,7 @@ import (
 type IUserUsecase interface {
 	// Register mendaftarkan akun baru. Email duplikat -> apperror.EmailTaken().
 	Register(ctx context.Context, req dto.RegisterRequest) (dto.RegisterResponse, error)
+	Login(ctx context.Context, req dto.LoginRequest) (dto.LoginResponse, error)
+	Me(ctx context.Context, userID string) (dto.MeResponse, error)
+	Logout(ctx context.Context, req dto.LogoutRequest) error
 }

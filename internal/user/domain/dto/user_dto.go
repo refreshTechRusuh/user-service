@@ -70,3 +70,19 @@ func (r LoginRequest) Validate() []string {
 	}
 	return errs
 }
+
+// ---- Me (profil) ----
+
+// MeResponse = profil user dari token (GET /auth/me).
+type MeResponse struct {
+	UserID string      `json:"userId"`
+	Email  string      `json:"email"`
+	Role   entity.Role `json:"role"`
+}
+
+// ---- Logout ----
+
+// LogoutRequest = refresh token yang akan di-revoke.
+type LogoutRequest struct {
+	RefreshToken string `json:"refreshToken"`
+}

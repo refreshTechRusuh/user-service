@@ -85,11 +85,41 @@ Response memakai envelope `{status, message, data}` (`status:"00000"` = sukses).
 | `LOG_LEVEL` / `LOG_FORMAT` | `info` / `json`          | Logging slog                       |
 | `DB_HOST` ... `DB_NAME` | `localhost:5432` `rusuh_booking` | PostgreSQL (bersama)          |
 | `REDIS_ADDR`            | `localhost:6379`            | Redis (denylist refresh token)     |
-| `ACCESS_TOKEN_SECRET`   | `dev-secret-...`            | Secret JWT authToken               |
-| `REFRESH_TOKEN_SECRET`  | `dev-refresh-...`           | Secret JWT refreshToken            |
-| `ACCESS_TOKEN_TTL_SECONDS`  | `3600`                  | Umur authToken (detik)             |
+| `USER_JWT_SECRET`       | `dev-user-jwt-...`          | Secret authToken login. **Beda** dari `ACCESS_TOKEN_SECRET` antrian |
+| `REFRESH_TOKEN_SECRET`  | `dev-refresh-...`           | Secret refreshToken (harus beda dari `USER_JWT_SECRET`) |
+| `USER_JWT_TTL_SECONDS`  | `3600`                      | Umur authToken (detik)             |
 | `REFRESH_TOKEN_TTL_SECONDS` | `604800`                | Umur refreshToken (detik)          |
+| `ADMIN_EMAIL` / `ADMIN_PASSWORD` | (kosong)           | Akun admin awal, dibuat saat startup bila belum ada |
 | `DUKCAPIL_BASE_URL`     | `http://localhost:8085`     | Alamat dukcapil-mock               |
+
+Service **menolak start** bila: `APP_ENV=production` masih memakai secret default,
+`USER_JWT_SECRET` sama dengan `REFRESH_TOKEN_SECRET`, atau hanya salah satu dari
+`ADMIN_EMAIL`/`ADMIN_PASSWORD` yang diisi.
+
+## Token & role
+
+- Admin dan customer memakai **authToken yang sama** dari `POST /auth/login`; yang
+  membedakan hanya claim `role` (`customer` | `admin`). Role tidak bisa diubah klien
+  karena token ditandatangani (HS256).
+- authToken ditandatangani `USER_JWT_SECRET`, **terpisah** dari Access Token antrian
+  (`ACCESS_TOKEN_SECRET`, milik queue-service). Akibatnya token antrian tidak bisa dipakai
+  sebagai token login, dan queue-service tidak memegang secret yang bisa membuat token admin.
+  Service lain yang memverifikasi token login (event/booking/payment) harus memakai
+  `USER_JWT_SECRET` yang sama.
+
+### Akun admin
+
+Register selalu membuat `customer`, dan **tidak ada endpoint untuk menjadikan admin**.
+Akun admin dibuat saat startup dari env:
+
+```bash
+ADMIN_EMAIL=admin@rusuh.local ADMIN_PASSWORD='minimal-12-karakter' make run
+```
+
+- Email belum terdaftar → akun `admin` dibuat (password di-hash bcrypt).
+- Sudah ada sebagai admin → dibiarkan (password **tidak** ditimpa; aman tiap restart & multi-instance).
+- Sudah ada sebagai customer → **tidak** dinaikkan otomatis, hanya muncul peringatan di log.
+- Credential tidak pernah disimpan di repo/migration; di production isi dari secret manager.
 
 ## Perintah Makefile
 

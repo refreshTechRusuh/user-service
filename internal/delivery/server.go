@@ -1,6 +1,9 @@
 package delivery
 
 import (
+	"context"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -18,8 +21,9 @@ import (
 )
 
 // New merakit semua lapis + daftarkan route. Mengembalikan handler (mux dibungkus
-// middleware global) agar siap dipasang ke http.Server.
-func New(cfg *config.Config, pool *pgxpool.Pool, rdb *goredis.Client) http.Handler {
+// middleware global) agar siap dipasang ke http.Server. Juga memastikan akun admin
+// awal ada (bila ADMIN_EMAIL di-set) — gagal = service tidak start (fail fast).
+func New(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, rdb *goredis.Client) (http.Handler, error) {
 	// Adapter
 	repo := db.NewUserRepository(pool)
 	tokenStore := cache.NewTokenStore(rdb)
@@ -32,6 +36,18 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb *goredis.Client) http.Handl
 
 	uc := usecase.NewUserUsecase(repo, tokenGen, tokenStore)
 	h := handler.NewUserHandler(uc)
+
+	// Akun admin awal (credential dari env, bukan dari repo).
+	res, err := uc.EnsureAdmin(ctx, cfg.Admin.Email, cfg.Admin.Password)
+	if err != nil {
+		return nil, fmt.Errorf("bootstrap admin: %w", err)
+	}
+	switch res {
+	case usecase.BootstrapCreated:
+		slog.Info("akun admin dibuat", "email", cfg.Admin.Email)
+	case usecase.BootstrapNotAdm:
+		slog.Warn("ADMIN_EMAIL sudah terdaftar sebagai customer; tidak dinaikkan otomatis", "email", cfg.Admin.Email)
+	}
 
 	// Member/NIK: repo + client Dukcapil + usecase + handler.
 	memberRepo := db.NewMemberRepository(pool)
@@ -73,5 +89,5 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb *goredis.Client) http.Handl
 	})
 
 	// Middleware global: transaction-id di semua response.
-	return middleware.Chain(mux, middleware.TransactionID)
+	return middleware.Chain(mux, middleware.TransactionID), nil
 }

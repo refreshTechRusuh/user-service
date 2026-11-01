@@ -24,6 +24,7 @@ type Config struct {
 	JWT      JWTConfig
 	Redis    RedisConfig
 	Dukcapil DukcapilConfig
+	Admin    AdminBootstrapConfig
 }
 
 type AppConfig struct {
@@ -48,14 +49,30 @@ type DBConfig struct {
 	ConnTimeoutSecs int
 }
 
-// JWTConfig = rahasia & masa berlaku token.
-// Secret dipakai HMAC sign/verify (harus SAMA di semua service yang verifikasi).
+// JWTConfig = rahasia & masa berlaku token LOGIN (authToken + refreshToken).
+//
+// AccessSecret (env USER_JWT_SECRET) SENGAJA berbeda dari ACCESS_TOKEN_SECRET milik
+// queue-service (Access Token antrian). Alasannya:
+//   - token login (berisi role, bisa admin) dan token antrian tidak bisa saling
+//     menggantikan walau sama-sama JWT HS256;
+//   - queue-service tidak memegang secret yang bisa membuat token admin.
+//
+// Service lain yang memverifikasi token login (event/booking/payment) memakai
+// USER_JWT_SECRET yang sama.
 // Field secret diberi tag json:"-" agar tak ikut ter-log bila Config di-marshal.
 type JWTConfig struct {
-	AccessSecret  string        `json:"-"`
-	RefreshSecret string        `json:"-"`
+	AccessSecret  string        `json:"-"` // USER_JWT_SECRET
+	RefreshSecret string        `json:"-"` // REFRESH_TOKEN_SECRET
 	AccessTTL     time.Duration // umur authToken (mis. 1 jam)
 	RefreshTTL    time.Duration // umur refreshToken (mis. 7 hari)
+}
+
+// AdminBootstrapConfig = akun admin awal yang dibuat saat startup bila belum ada.
+// Kosong = dilewati. Credential TIDAK disimpan di repo/migration; isi lewat env /
+// secret manager.
+type AdminBootstrapConfig struct {
+	Email    string
+	Password string `json:"-"`
 }
 
 type RedisConfig struct {
@@ -95,9 +112,9 @@ func Load() (*Config, error) {
 			ConnTimeoutSecs: getEnvInt("DB_CONN_TIMEOUT_SECONDS", 5),
 		},
 		JWT: JWTConfig{
-			AccessSecret:  getEnv("ACCESS_TOKEN_SECRET", "dev-secret-change-in-production"),
-			RefreshSecret: getEnv("REFRESH_TOKEN_SECRET", "dev-refresh-secret-change-in-production"),
-			AccessTTL:     time.Duration(getEnvInt("ACCESS_TOKEN_TTL_SECONDS", 3600)) * time.Second,
+			AccessSecret:  getEnv("USER_JWT_SECRET", defaultUserJWTSecret),
+			RefreshSecret: getEnv("REFRESH_TOKEN_SECRET", defaultRefreshSecret),
+			AccessTTL:     time.Duration(getEnvInt("USER_JWT_TTL_SECONDS", 3600)) * time.Second,
 			RefreshTTL:    time.Duration(getEnvInt("REFRESH_TOKEN_TTL_SECONDS", 7*24*3600)) * time.Second,
 		},
 		Redis: RedisConfig{
@@ -109,8 +126,37 @@ func Load() (*Config, error) {
 			BaseURL:        getEnv("DUKCAPIL_BASE_URL", "http://localhost:8085"),
 			TimeoutSeconds: getEnvInt("DUKCAPIL_TIMEOUT_SECONDS", 5),
 		},
+		Admin: AdminBootstrapConfig{
+			Email:    getEnv("ADMIN_EMAIL", ""),
+			Password: getEnv("ADMIN_PASSWORD", ""),
+		},
+	}
+	if err := cfg.validate(); err != nil {
+		return nil, err
 	}
 	return cfg, nil
+}
+
+// Default secret hanya untuk dev lokal. Di production wajib diganti (dicek validate).
+const (
+	defaultUserJWTSecret = "dev-user-jwt-secret-change-in-production"
+	defaultRefreshSecret = "dev-refresh-secret-change-in-production"
+)
+
+// validate menolak konfigurasi berbahaya sebelum service jalan (fail fast).
+func (c *Config) validate() error {
+	if c.JWT.AccessSecret == c.JWT.RefreshSecret {
+		return fmt.Errorf("config: USER_JWT_SECRET dan REFRESH_TOKEN_SECRET harus berbeda")
+	}
+	if c.App.Env == "production" {
+		if c.JWT.AccessSecret == defaultUserJWTSecret || c.JWT.RefreshSecret == defaultRefreshSecret {
+			return fmt.Errorf("config: USER_JWT_SECRET & REFRESH_TOKEN_SECRET wajib di-set di production")
+		}
+	}
+	if (c.Admin.Email == "") != (c.Admin.Password == "") {
+		return fmt.Errorf("config: ADMIN_EMAIL dan ADMIN_PASSWORD harus diisi berdua atau dikosongkan berdua")
+	}
+	return nil
 }
 
 // DSN membentuk connection string PostgreSQL dari DBConfig.

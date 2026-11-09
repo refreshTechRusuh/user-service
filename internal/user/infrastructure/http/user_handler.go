@@ -5,6 +5,8 @@ package http
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"strings"
 
@@ -87,7 +89,8 @@ func (h *UserHandler) Me(w http.ResponseWriter, r *http.Request) {
 // Logout menangani POST /auth/logout. Revoke refresh token. Idempoten.
 func (h *UserHandler) Logout(w http.ResponseWriter, r *http.Request) {
 	var req dto.LogoutRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	// Body opsional: tanpa body (EOF) dianggap refreshToken kosong → logout no-op sukses.
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
 		apinizer.FailedBadRequest(w, "body tidak valid")
 		return
 	}

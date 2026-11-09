@@ -121,9 +121,12 @@ func (u *UserUsecase) Me(ctx context.Context, userID string) (dto.MeResponse, er
 
 // Logout mencabut (revoke) refresh token: masukkan ke denylist Redis dengan TTL
 // = sisa umur token. Idempoten — memanggil berkali-kali tetap sukses.
+//
+// refreshToken OPSIONAL: bila kosong (klien sudah kehilangan token / sesi habis)
+// tidak ada yang perlu dicabut, jadi logout tetap sukses (no-op idempoten).
 func (u *UserUsecase) Logout(ctx context.Context, req dto.LogoutRequest) error {
 	if req.RefreshToken == "" {
-		return apperror.Validation("refreshToken wajib diisi")
+		return nil
 	}
 	// Verifikasi dulu: hanya token kita yang sah yang boleh (dan perlu) dicabut.
 	claims, err := u.tokenGen.VerifyRefreshToken(req.RefreshToken)

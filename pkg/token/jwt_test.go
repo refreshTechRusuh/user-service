@@ -24,6 +24,30 @@ func TestAuthToken_ShouldCarryRole_AndVerifyWithSameSecret(t *testing.T) {
 	}
 }
 
+func TestRefreshToken_ShouldVerifyOnlyWithRefreshSecret(t *testing.T) {
+	g := NewGenerator("user-secret", "refresh-secret", time.Hour, 24*time.Hour)
+	refresh, err := g.GenerateRefreshToken("user-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	c, err := g.VerifyRefreshToken(refresh)
+	if err != nil || c.Subject != "user-1" || c.Role != "" {
+		t.Fatalf("claims=%+v err=%v; mau sub user-1 tanpa role", c, err)
+	}
+	if _, err := g.VerifyAuthToken(refresh); err == nil {
+		t.Error("refresh token tidak boleh lolos sebagai authToken")
+	}
+}
+
+func TestAccessTTLSeconds_ShouldReturnConfiguredTTL(t *testing.T) {
+	g := NewGenerator("a", "b", 90*time.Minute, time.Hour)
+
+	if got := g.AccessTTLSeconds(); got != 5400 {
+		t.Errorf("AccessTTLSeconds = %d; mau 5400", got)
+	}
+}
+
 // Token yang ditandatangani secret lain (mis. Access Token antrian dengan
 // ACCESS_TOKEN_SECRET) harus DITOLAK — inilah gunanya memisahkan secret.
 func TestVerifyAuthToken_ShouldReject_WhenSignedWithOtherSecret(t *testing.T) {

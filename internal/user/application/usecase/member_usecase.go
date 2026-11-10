@@ -71,7 +71,19 @@ func (u *MemberUsecase) Create(ctx context.Context, userID string, req dto.Membe
 	if err := u.repo.Create(ctx, m); err != nil {
 		return dto.MemberResponse{}, err // MemberDuplicate / Internal dari repo
 	}
-	return dto.MemberResponse{MemberID: m.ID, NIK: m.NIK, Nama: m.Nama}, nil
+	return toMemberResponse(m), nil
+}
+
+// toMemberResponse memetakan entity ke payload response (satu tempat agar
+// list/create/update selalu seragam).
+func toMemberResponse(m entity.MemberNIK) dto.MemberResponse {
+	return dto.MemberResponse{
+		MemberID: m.ID,
+		NIK:      m.NIK,
+		Nama:     m.Nama,
+		TglLahir: m.TglLahir,
+		NamaIbu:  m.NamaIbu,
+	}
 }
 
 func (u *MemberUsecase) List(ctx context.Context, userID string) (dto.MemberListResponse, error) {
@@ -81,7 +93,7 @@ func (u *MemberUsecase) List(ctx context.Context, userID string) (dto.MemberList
 	}
 	items := make([]dto.MemberResponse, 0, len(members))
 	for _, m := range members {
-		items = append(items, dto.MemberResponse{MemberID: m.ID, NIK: m.NIK, Nama: m.Nama})
+		items = append(items, toMemberResponse(m))
 	}
 	return dto.MemberListResponse{Items: items}, nil
 }
@@ -101,7 +113,7 @@ func (u *MemberUsecase) Update(ctx context.Context, userID, memberID string, req
 	if err := u.repo.Update(ctx, m); err != nil {
 		return dto.MemberResponse{}, err // NotFound / MemberDuplicate / Internal
 	}
-	return dto.MemberResponse{MemberID: m.ID, NIK: m.NIK, Nama: m.Nama}, nil
+	return toMemberResponse(m), nil
 }
 
 func (u *MemberUsecase) Delete(ctx context.Context, userID, memberID string) error {

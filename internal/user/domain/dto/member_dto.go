@@ -53,10 +53,15 @@ type VerifyNIKResponse struct {
 }
 
 // MemberResponse = payload satu member (isi field data).
+// TglLahir (YYYY-MM-DD) dan NamaIbu ikut dikembalikan karena FE memakainya untuk
+// mengisi data penonton saat booking (dicocokkan ke Dukcapil). Hanya pemilik akun
+// yang bisa membacanya (endpoint member butuh login dan di-scope per user).
 type MemberResponse struct {
 	MemberID string `json:"memberId"`
 	NIK      string `json:"nik"`
 	Nama     string `json:"nama"`
+	TglLahir string `json:"tglLahir"`
+	NamaIbu  string `json:"namaIbu"`
 }
 
 // MemberListResponse = daftar member milik user.

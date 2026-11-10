@@ -69,6 +69,10 @@ func mapErrorCode(code apperror.ErrorCode) int {
 		return http.StatusNotFound
 	case apperror.ErrEmailTaken, apperror.ErrMemberDuplicate:
 		return http.StatusConflict
+	case apperror.ErrRateLimited:
+		return http.StatusTooManyRequests
+	case apperror.ErrDukcapilUnavailable:
+		return http.StatusServiceUnavailable
 	default:
 		return http.StatusInternalServerError
 	}
@@ -86,6 +90,10 @@ func httpStatusStr(status int) string {
 		return "404"
 	case 409:
 		return "409"
+	case 429:
+		return "429"
+	case 503:
+		return "503"
 	default:
 		return "500"
 	}

@@ -29,8 +29,14 @@ const (
 	ErrEmailTaken      ErrorCode = "EMAIL_TAKEN"
 	ErrMemberDuplicate ErrorCode = "MEMBER_DUPLICATE"
 
+	// 429
+	ErrRateLimited ErrorCode = "RATE_LIMITED"
+
 	// 500
 	ErrInternal ErrorCode = "INTERNAL_ERROR"
+
+	// 503
+	ErrDukcapilUnavailable ErrorCode = "DUKCAPIL_UNAVAILABLE"
 )
 
 // AppError adalah error domain dengan kode spesifik + pesan human-readable.
@@ -70,6 +76,15 @@ func NIKInvalid() *AppError {
 	return New(ErrNIKInvalid, "NIK tidak valid: data tidak cocok dengan Dukcapil")
 }
 func MemberDuplicate() *AppError { return New(ErrMemberDuplicate, "NIK ini sudah tersimpan") }
+func RateLimited() *AppError {
+	return New(ErrRateLimited, "Terlalu banyak permintaan, coba lagi sebentar")
+}
+
+// DukcapilUnavailable = Dukcapil tak terjangkau (timeout/mati). BEDA dengan NIKInvalid:
+// di sini kita tidak tahu valid/tidaknya, jadi klien diminta mencoba lagi.
+func DukcapilUnavailable(cause error) *AppError {
+	return Wrap(ErrDukcapilUnavailable, "Layanan verifikasi NIK sedang tidak tersedia, coba lagi", cause)
+}
 func Internal(cause error) *AppError {
 	return Wrap(ErrInternal, "Terjadi kesalahan pada server", cause)
 }

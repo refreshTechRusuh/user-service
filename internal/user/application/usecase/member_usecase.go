@@ -3,6 +3,8 @@ package usecase
 
 import (
 	"context"
+	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -34,6 +36,23 @@ func (u *MemberUsecase) verify(ctx context.Context, req dto.MemberRequest) error
 		return apperror.NIKInvalid()
 	}
 	return nil
+}
+
+// VerifyNIK mencocokkan {nik,nama,tglLahir,namaIbu} ke Dukcapil tanpa menyimpan apa pun.
+//
+// Beda dengan verify() di atas: di sini kegagalan teknis TIDAK dianggap "NIK tidak valid".
+// FE perlu bisa membedakan "data salah" (Valid=false) dari "layanan sedang bermasalah"
+// (error 503) supaya user tidak dituduh salah isi saat Dukcapil yang mati.
+func (u *MemberUsecase) VerifyNIK(ctx context.Context, req dto.VerifyNIKRequest) (dto.VerifyNIKResponse, error) {
+	valid, err := u.dukcapil.Verify(ctx,
+		strings.TrimSpace(req.NIK), strings.TrimSpace(req.Nama),
+		strings.TrimSpace(req.TglLahir), strings.TrimSpace(req.NamaIbu))
+	if err != nil {
+		// Jangan log NIK/nama (data pribadi); cukup penyebab teknisnya.
+		slog.WarnContext(ctx, "verifikasi dukcapil gagal", "err", err)
+		return dto.VerifyNIKResponse{}, apperror.DukcapilUnavailable(err)
+	}
+	return dto.VerifyNIKResponse{Valid: valid}, nil
 }
 
 func (u *MemberUsecase) Create(ctx context.Context, userID string, req dto.MemberRequest) (dto.MemberResponse, error) {

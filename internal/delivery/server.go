@@ -58,6 +58,10 @@ func New(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, rdb *gored
 	memberUC := usecase.NewMemberUsecase(memberRepo, dukcapilClient)
 	mh := handler.NewMemberHandler(memberUC)
 
+	// Verifikasi NIK publik (FE tidak boleh langsung ke dukcapil-mock) + rate limit Redis.
+	vh := handler.NewVerifyHandler(memberUC, cache.NewRateLimiter(rdb),
+		cfg.Verify.RatePerIPPerMin, cfg.Verify.RatePerNIKPerMin)
+
 	// Riwayat tiket (read-only lintas tabel booking/event).
 	historyRepo := db.NewHistoryRepository(pool)
 	historyUC := usecase.NewHistoryUsecase(historyRepo)
@@ -75,6 +79,8 @@ func New(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, rdb *gored
 	mux.HandleFunc("POST /auth/logout", h.Logout)
 	// Butuh authToken
 	mux.Handle("GET /auth/me", requireAuth(h.Me))
+	// Verifikasi NIK ke Dukcapil (publik: guest ikut memakai; dibatasi rate limit)
+	mux.HandleFunc("POST /api/user/v1/nik/verify", vh.Verify)
 	// Member/NIK (semua butuh authToken, scoped per user)
 	mux.Handle("POST /api/user/v1/member/create", requireAuth(mh.Create))
 	mux.Handle("GET /api/user/v1/member/list", requireAuth(mh.List))

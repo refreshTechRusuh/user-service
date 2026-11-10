@@ -7,17 +7,16 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/refreshTechRusuh/user-service/internal/user/domain/entity"
 	"github.com/refreshTechRusuh/user-service/pkg/apperror"
 )
 
 type MemberRepository struct {
-	pool *pgxpool.Pool
+	pool Querier
 }
 
-func NewMemberRepository(pool *pgxpool.Pool) *MemberRepository {
+func NewMemberRepository(pool Querier) *MemberRepository {
 	return &MemberRepository{pool: pool}
 }
 

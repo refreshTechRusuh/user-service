@@ -25,6 +25,13 @@ type Config struct {
 	Redis    RedisConfig
 	Dukcapil DukcapilConfig
 	Admin    AdminBootstrapConfig
+	Verify   VerifyNIKConfig
+}
+
+// VerifyNIKConfig = batas panggilan endpoint publik verifikasi NIK (per menit; 0 = mati).
+type VerifyNIKConfig struct {
+	RatePerIPPerMin  int // NIK_VERIFY_RATE_PER_IP_PER_MIN
+	RatePerNIKPerMin int // NIK_VERIFY_RATE_PER_NIK_PER_MIN
 }
 
 type AppConfig struct {
@@ -129,6 +136,10 @@ func Load() (*Config, error) {
 		Admin: AdminBootstrapConfig{
 			Email:    getEnv("ADMIN_EMAIL", ""),
 			Password: getEnv("ADMIN_PASSWORD", ""),
+		},
+		Verify: VerifyNIKConfig{
+			RatePerIPPerMin:  getEnvInt("NIK_VERIFY_RATE_PER_IP_PER_MIN", 10),
+			RatePerNIKPerMin: getEnvInt("NIK_VERIFY_RATE_PER_NIK_PER_MIN", 5),
 		},
 	}
 	if err := cfg.validate(); err != nil {

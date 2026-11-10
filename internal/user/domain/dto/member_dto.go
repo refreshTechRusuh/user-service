@@ -33,6 +33,25 @@ func (r MemberRequest) Validate() []string {
 	return errs
 }
 
+// VerifyNIKRequest = body POST /api/user/v1/nik/verify: cek pencocokan ke Dukcapil
+// TANPA menyimpan apa pun. Publik (guest boleh), jadi dilindungi rate limit.
+type VerifyNIKRequest struct {
+	NIK      string `json:"nik"`
+	Nama     string `json:"nama"`
+	TglLahir string `json:"tglLahir"`
+	NamaIbu  string `json:"namaIbu"`
+}
+
+// Validate memeriksa bentuk request (aturan sama dengan MemberRequest).
+func (r VerifyNIKRequest) Validate() []string {
+	return MemberRequest(r).Validate()
+}
+
+// VerifyNIKResponse = hasil pencocokan. Valid=false berarti data tidak cocok.
+type VerifyNIKResponse struct {
+	Valid bool `json:"valid"`
+}
+
 // MemberResponse = payload satu member (isi field data).
 type MemberResponse struct {
 	MemberID string `json:"memberId"`

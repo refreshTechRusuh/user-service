@@ -94,6 +94,6 @@ func New(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, rdb *gored
 		_, _ = w.Write([]byte(`{"status":"00000","message":"user-service ok","data":{}}`))
 	})
 
-	// Middleware global: transaction-id di semua response.
-	return middleware.Chain(mux, middleware.TransactionID), nil
+	// Middleware global: transaction-id dan CORS di semua response.
+	return middleware.Chain(mux, middleware.CORSMiddleware("*"), middleware.TransactionID), nil
 }

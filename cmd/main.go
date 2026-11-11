@@ -16,6 +16,7 @@ import (
 	"github.com/refreshTechRusuh/user-service/internal/config"
 	"github.com/refreshTechRusuh/user-service/internal/delivery"
 	pkgdb "github.com/refreshTechRusuh/user-service/pkg/db"
+	pkgotel "github.com/refreshTechRusuh/user-service/pkg/otel"
 	pkgredis "github.com/refreshTechRusuh/user-service/pkg/redis"
 )
 
@@ -31,6 +32,18 @@ func main() {
 	// rootCtx: dibatalkan saat service mau mati, supaya operasi panjang ikut berhenti.
 	rootCtx, cancelRoot := context.WithCancel(context.Background())
 	defer cancelRoot()
+
+	// OpenTelemetry -> GCP Cloud Trace. OTEL_ENABLED=false mematikan (lokal/test).
+	// Gagal setup TIDAK menggagalkan service: tracing hanya observabilitas.
+	if otelShutdown, err := pkgotel.SetupTracerProvider(rootCtx, "user-service", "1.0.0"); err != nil {
+		slog.Warn("otel: gagal setup tracer provider, tracing nonaktif", "err", err)
+	} else {
+		defer func() {
+			shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = otelShutdown(shutCtx)
+		}()
+	}
 
 	// 2. Koneksi DB (pool). Gagal konek = gagal start (fail fast).
 	pool, err := pkgdb.NewPool(rootCtx, cfg.DB)

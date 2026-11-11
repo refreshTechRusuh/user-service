@@ -10,6 +10,10 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 func TestVerify_ShouldPostAllFourFields_AndReturnValid(t *testing.T) {
@@ -32,6 +36,34 @@ func TestVerify_ShouldPostAllFourFields_AndReturnValid(t *testing.T) {
 	assert.Equal(t, map[string]string{
 		"nik": "3273000000000001", "nama": "Budi", "tglLahir": "1990-01-01", "namaIbu": "Siti",
 	}, gotBody)
+}
+
+func TestVerify_ShouldPropagateTraceparent_ToDukcapil(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	prevTP, prevProp := otel.GetTracerProvider(), otel.GetTextMapPropagator()
+	otel.SetTracerProvider(tp)
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+	t.Cleanup(func() {
+		otel.SetTracerProvider(prevTP)
+		otel.SetTextMapPropagator(prevProp)
+		_ = tp.Shutdown(context.Background())
+	})
+	var gotTraceparent string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotTraceparent = r.Header.Get("traceparent")
+		_, _ = w.Write([]byte(`{"data":{"valid":true}}`))
+	}))
+	defer srv.Close()
+	ctx, parent := tp.Tracer("uji").Start(context.Background(), "request-masuk")
+
+	_, err := NewDukcapilClient(srv.URL, time.Second).Verify(ctx, "n", "n", "t", "i")
+	parent.End()
+
+	require.NoError(t, err)
+	assert.Contains(t, gotTraceparent, parent.SpanContext().TraceID().String(),
+		"dukcapil-mock harus menerima trace ID yang sama agar trace tersambung")
+	assert.GreaterOrEqual(t, len(rec.Ended()), 2, "ada span klien selain span induk")
 }
 
 func TestVerify_ShouldReturnFalse_WhenDukcapilSaysNotMatching(t *testing.T) {

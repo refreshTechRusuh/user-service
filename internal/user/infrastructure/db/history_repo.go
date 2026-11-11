@@ -5,16 +5,14 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/refreshTechRusuh/user-service/internal/user/domain/dto"
 )
 
 type HistoryRepository struct {
-	pool *pgxpool.Pool
+	pool Querier
 }
 
-func NewHistoryRepository(pool *pgxpool.Pool) *HistoryRepository {
+func NewHistoryRepository(pool Querier) *HistoryRepository {
 	return &HistoryRepository{pool: pool}
 }
 

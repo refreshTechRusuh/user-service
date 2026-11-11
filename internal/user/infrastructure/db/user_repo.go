@@ -9,7 +9,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/refreshTechRusuh/user-service/internal/user/domain/entity"
 	"github.com/refreshTechRusuh/user-service/pkg/apperror"
@@ -19,10 +18,10 @@ import (
 const uniqueViolation = "23505"
 
 type UserRepository struct {
-	pool *pgxpool.Pool
+	pool Querier
 }
 
-func NewUserRepository(pool *pgxpool.Pool) *UserRepository {
+func NewUserRepository(pool Querier) *UserRepository {
 	return &UserRepository{pool: pool}
 }
 

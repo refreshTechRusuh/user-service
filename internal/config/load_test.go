@@ -95,3 +95,28 @@ func TestSetupLogger_ShouldSupportTextFormat(t *testing.T) {
 
 	assert.True(t, slog.Default().Enabled(context.Background(), slog.LevelInfo))
 }
+
+func TestLoad_Security_ShouldUseSafeDefaults(t *testing.T) {
+	cfg, err := Load()
+
+	require.NoError(t, err)
+	assert.Equal(t, int64(1<<20), cfg.Security.MaxBodyBytes)
+	assert.Equal(t, 10, cfg.Security.LoginPerIPPerMin)
+	assert.Equal(t, 10, cfg.Security.LoginPerEmailPerMin)
+	assert.Equal(t, 5, cfg.Security.RegisterPerIPPerMin)
+}
+
+func TestLoad_Security_ShouldReadEnvOverrides(t *testing.T) {
+	t.Setenv("MAX_BODY_BYTES", "2048")
+	t.Setenv("LOGIN_RATE_PER_IP_PER_MIN", "20")
+	t.Setenv("LOGIN_RATE_PER_EMAIL_PER_MIN", "0")
+	t.Setenv("REGISTER_RATE_PER_IP_PER_MIN", "3")
+
+	cfg, err := Load()
+
+	require.NoError(t, err)
+	assert.Equal(t, int64(2048), cfg.Security.MaxBodyBytes)
+	assert.Equal(t, 20, cfg.Security.LoginPerIPPerMin)
+	assert.Equal(t, 0, cfg.Security.LoginPerEmailPerMin, "0 = dimatikan")
+	assert.Equal(t, 3, cfg.Security.RegisterPerIPPerMin)
+}

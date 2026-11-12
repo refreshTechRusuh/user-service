@@ -26,6 +26,15 @@ type Config struct {
 	Dukcapil DukcapilConfig
 	Admin    AdminBootstrapConfig
 	Verify   VerifyNIKConfig
+	Security SecurityConfig
+}
+
+// SecurityConfig = pengaman HTTP. Batas rate limit per menit; 0 = mati.
+type SecurityConfig struct {
+	MaxBodyBytes        int64 // MAX_BODY_BYTES (default 1 MB)
+	LoginPerIPPerMin    int   // LOGIN_RATE_PER_IP_PER_MIN
+	LoginPerEmailPerMin int   // LOGIN_RATE_PER_EMAIL_PER_MIN (lapis tahan IP palsu)
+	RegisterPerIPPerMin int   // REGISTER_RATE_PER_IP_PER_MIN
 }
 
 // VerifyNIKConfig = batas panggilan endpoint publik verifikasi NIK (per menit; 0 = mati).
@@ -136,6 +145,12 @@ func Load() (*Config, error) {
 		Admin: AdminBootstrapConfig{
 			Email:    getEnv("ADMIN_EMAIL", ""),
 			Password: getEnv("ADMIN_PASSWORD", ""),
+		},
+		Security: SecurityConfig{
+			MaxBodyBytes:        int64(getEnvInt("MAX_BODY_BYTES", 1<<20)),
+			LoginPerIPPerMin:    getEnvInt("LOGIN_RATE_PER_IP_PER_MIN", 10),
+			LoginPerEmailPerMin: getEnvInt("LOGIN_RATE_PER_EMAIL_PER_MIN", 10),
+			RegisterPerIPPerMin: getEnvInt("REGISTER_RATE_PER_IP_PER_MIN", 5),
 		},
 		Verify: VerifyNIKConfig{
 			RatePerIPPerMin:  getEnvInt("NIK_VERIFY_RATE_PER_IP_PER_MIN", 10),

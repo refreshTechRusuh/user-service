@@ -20,6 +20,12 @@ import (
 // malas (pgxpool tidak konek sampai dipakai) — cukup untuk menguji rangkaian route.
 func newHandler(t *testing.T, dukcapil http.HandlerFunc) http.Handler {
 	t.Helper()
+	return newHandlerWith(t, dukcapil, nil)
+}
+
+// newHandlerWith sama seperti newHandler, dengan kesempatan mengubah config (mis. batas rate limit).
+func newHandlerWith(t *testing.T, dukcapil http.HandlerFunc, mutate func(*config.Config)) http.Handler {
+	t.Helper()
 	mr := miniredis.RunT(t)
 	rdb := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
 	t.Cleanup(func() { _ = rdb.Close() })
@@ -33,6 +39,9 @@ func newHandler(t *testing.T, dukcapil http.HandlerFunc) http.Handler {
 	require.NoError(t, err)
 	cfg.Dukcapil.BaseURL = srv.URL
 	cfg.Admin = config.AdminBootstrapConfig{} // lewati bootstrap admin (butuh DB)
+	if mutate != nil {
+		mutate(cfg)
+	}
 
 	h, err := New(context.Background(), cfg, pool, rdb)
 	require.NoError(t, err)
@@ -112,4 +121,125 @@ func TestNew_ShouldReturn404_ForUnknownRoute(t *testing.T) {
 	h := newHandler(t, func(http.ResponseWriter, *http.Request) {})
 
 	assert.Equal(t, http.StatusNotFound, serve(h, http.MethodGet, "/tidak/ada", "").Code)
+}
+
+// ---------------------------------------------------------------- keamanan
+
+var noop = func(http.ResponseWriter, *http.Request) {}
+
+func TestNew_ShouldSetSecurityHeaders_OnEveryKindOfResponse(t *testing.T) {
+	h := newHandler(t, noop)
+
+	for name, rr := range map[string]*httptest.ResponseRecorder{
+		"200 health":        serve(h, http.MethodGet, "/sys/ping", ""),
+		"404 route tak ada": serve(h, http.MethodGet, "/tidak/ada", ""),
+		"401 butuh login":   serve(h, http.MethodGet, "/auth/me", ""),
+		"400 validasi":      serve(h, http.MethodPost, "/auth/login", `{}`),
+		"preflight OPTIONS": serve(h, http.MethodOptions, "/auth/login", ""),
+	} {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, "nosniff", rr.Header().Get("X-Content-Type-Options"))
+			assert.Equal(t, "default-src 'none'", rr.Header().Get("Content-Security-Policy"))
+			assert.Equal(t, "no-store", rr.Header().Get("Cache-Control"))
+			assert.NotEmpty(t, rr.Header().Get("Strict-Transport-Security"))
+			assert.Empty(t, rr.Header().Get("X-Frame-Options"))
+		})
+	}
+}
+
+func TestNew_ShouldReturn413_WithCORSAndSecurityHeaders_WhenBodyTooLarge(t *testing.T) {
+	h := newHandlerWith(t, noop, func(c *config.Config) { c.Security.MaxBodyBytes = 64 })
+	req := httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(strings.Repeat("a", 200)))
+	req.Header.Set("Origin", "https://fe.example")
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusRequestEntityTooLarge, rr.Code)
+	assert.Equal(t, "https://fe.example", rr.Header().Get("Access-Control-Allow-Origin"),
+		"413 harus membawa header CORS, kalau tidak browser melaporkan CORS error")
+	assert.Equal(t, "nosniff", rr.Header().Get("X-Content-Type-Options"))
+}
+
+func TestNew_ShouldRateLimitLogin_PerIP(t *testing.T) {
+	h := newHandlerWith(t, noop, func(c *config.Config) {
+		c.Security.LoginPerIPPerMin = 3
+		c.Security.LoginPerEmailPerMin = 0 // matikan lapis email agar yang diuji hanya IP
+	})
+	login := func(ip string) int {
+		req := httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(`{"email":"a@b.com","password":"x"}`))
+		req.Header.Set("X-Forwarded-For", ip)
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, req)
+		return rr.Code
+	}
+
+	var last int
+	for i := 0; i < 4; i++ {
+		last = login("9.9.9.9")
+	}
+
+	assert.Equal(t, http.StatusTooManyRequests, last)
+	assert.NotEqual(t, http.StatusTooManyRequests, login("8.8.8.8"), "IP lain tidak terpengaruh")
+}
+
+func TestNew_ShouldRateLimitLogin_PerEmail_EvenWhenIPKeepsChanging(t *testing.T) {
+	h := newHandlerWith(t, noop, func(c *config.Config) {
+		c.Security.LoginPerIPPerMin = 0 // IP tak dibatasi: penyerang memalsukan X-Forwarded-For
+		c.Security.LoginPerEmailPerMin = 3
+	})
+	login := func(ip, email string) int {
+		req := httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(`{"email":"`+email+`","password":"tebakan"}`))
+		req.Header.Set("X-Forwarded-For", ip)
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, req)
+		return rr.Code
+	}
+
+	codes := []int{
+		login("1.1.1.1", "korban@mail.com"),
+		login("2.2.2.2", "korban@mail.com"),
+		login("3.3.3.3", "Korban@Mail.com"), // beda huruf besar = akun yang sama
+		login("4.4.4.4", "korban@mail.com"),
+	}
+
+	assert.Equal(t, http.StatusTooManyRequests, codes[3], "tebakan password dibatasi per akun walau IP berganti-ganti")
+	assert.NotEqual(t, http.StatusTooManyRequests, login("5.5.5.5", "lain@mail.com"))
+}
+
+func TestNew_ShouldRateLimitRegister_PerIP(t *testing.T) {
+	h := newHandlerWith(t, noop, func(c *config.Config) { c.Security.RegisterPerIPPerMin = 2 })
+	register := func() int {
+		req := httptest.NewRequest(http.MethodPost, "/auth/register", strings.NewReader(`{}`))
+		req.Header.Set("X-Forwarded-For", "7.7.7.7")
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, req)
+		return rr.Code
+	}
+
+	register()
+	register()
+
+	assert.Equal(t, http.StatusTooManyRequests, register())
+}
+
+func TestNew_ShouldNotRateLimit_WhenLimitsAreZero(t *testing.T) {
+	h := newHandlerWith(t, noop, func(c *config.Config) {
+		c.Security.LoginPerIPPerMin, c.Security.LoginPerEmailPerMin, c.Security.RegisterPerIPPerMin = 0, 0, 0
+	})
+
+	for i := 0; i < 20; i++ {
+		require.NotEqual(t, http.StatusTooManyRequests, serve(h, http.MethodPost, "/auth/login", `{"email":"a@b.com","password":"x"}`).Code)
+	}
+}
+
+func TestNew_Login_ShouldStillReachHandlerWithFullBody_AfterRateLimitPeek(t *testing.T) {
+	h := newHandler(t, noop)
+
+	// Body diintip middleware (untuk email). Handler masih harus melihat body utuh:
+	// email valid + password kosong → validasi handler (400, bukan "JSON rusak").
+	rr := serve(h, http.MethodPost, "/auth/login", `{"email":"a@b.com","password":""}`)
+
+	assert.Equal(t, http.StatusBadRequest, rr.Code)
+	assert.Contains(t, rr.Body.String(), "password wajib diisi")
 }

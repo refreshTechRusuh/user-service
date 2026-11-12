@@ -59,7 +59,8 @@ func New(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, rdb *gored
 	mh := handler.NewMemberHandler(memberUC)
 
 	// Verifikasi NIK publik (FE tidak boleh langsung ke dukcapil-mock) + rate limit Redis.
-	vh := handler.NewVerifyHandler(memberUC, cache.NewRateLimiter(rdb),
+	limiter := cache.NewRateLimiter(rdb)
+	vh := handler.NewVerifyHandler(memberUC, limiter,
 		cfg.Verify.RatePerIPPerMin, cfg.Verify.RatePerNIKPerMin)
 
 	// Riwayat tiket (read-only lintas tabel booking/event).
@@ -74,8 +75,17 @@ func New(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, rdb *gored
 
 	mux := http.NewServeMux()
 	// Publik
-	mux.HandleFunc("POST /auth/register", h.Register)
-	mux.HandleFunc("POST /auth/login", h.Login)
+	// Login & register rawan brute-force / pembuatan akun massal -> dibatasi.
+	// Login punya dua lapis: per IP dan per email (lapis per-email tetap berlaku
+	// walau penyerang memalsukan X-Forwarded-For).
+	sec := cfg.Security
+	mux.Handle("POST /auth/register", middleware.Chain(http.HandlerFunc(h.Register),
+		middleware.RateLimit(limiter, "register:ip", sec.RegisterPerIPPerMin, time.Minute, middleware.ClientIPKey),
+	))
+	mux.Handle("POST /auth/login", middleware.Chain(http.HandlerFunc(h.Login),
+		middleware.RateLimit(limiter, "login:ip", sec.LoginPerIPPerMin, time.Minute, middleware.ClientIPKey),
+		middleware.RateLimit(limiter, "login:email", sec.LoginPerEmailPerMin, time.Minute, middleware.BodyFieldKey("email")),
+	))
 	mux.HandleFunc("POST /auth/logout", h.Logout)
 	// Butuh authToken
 	mux.Handle("GET /auth/me", requireAuth(h.Me))
@@ -94,10 +104,15 @@ func New(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, rdb *gored
 		_, _ = w.Write([]byte(`{"status":"00000","message":"user-service ok","data":{}}`))
 	})
 
-	// Middleware global (luar -> dalam): CORS, tracing, transaction-id.
-	// CORS di luar tracing agar preflight OPTIONS tidak membuat span.
+	// Middleware global (luar -> dalam): header keamanan, CORS, batas body, tracing, transaction-id.
+	//  - header keamanan paling luar agar ada di SEMUA response (termasuk preflight & 413)
+	//  - batas body di dalam CORS supaya respons 413 tetap membawa header CORS
+	//    (kalau tidak, browser melaporkan "CORS error" alih-alih 413)
+	//  - CORS di luar tracing agar preflight OPTIONS tidak membuat span
 	return middleware.Chain(mux,
+		middleware.SecurityHeaders,
 		middleware.CORSMiddleware("*"),
+		middleware.MaxBody(sec.MaxBodyBytes),
 		middleware.OtelMiddleware("user-service", "/sys/ping"),
 		middleware.TransactionID,
 	), nil

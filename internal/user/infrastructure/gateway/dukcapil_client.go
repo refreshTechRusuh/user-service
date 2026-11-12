@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 // DukcapilClient memanggil POST {baseURL}/api/dukcapil/v1/verify.
@@ -22,7 +24,10 @@ type DukcapilClient struct {
 func NewDukcapilClient(baseURL string, timeout time.Duration) *DukcapilClient {
 	return &DukcapilClient{
 		baseURL: baseURL,
-		http:    &http.Client{Timeout: timeout},
+		// otelhttp.NewTransport: membuat span klien & menyisipkan header traceparent,
+		// sehingga trace user-service -> dukcapil-mock tersambung di Cloud Trace.
+		// Tanpa tracer provider (OTEL_ENABLED=false) ia menjadi no-op.
+		http: &http.Client{Timeout: timeout, Transport: otelhttp.NewTransport(http.DefaultTransport)},
 	}
 }
 

@@ -94,6 +94,11 @@ func New(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, rdb *gored
 		_, _ = w.Write([]byte(`{"status":"00000","message":"user-service ok","data":{}}`))
 	})
 
-	// Middleware global: transaction-id dan CORS di semua response.
-	return middleware.Chain(mux, middleware.CORSMiddleware("*"), middleware.TransactionID), nil
+	// Middleware global (luar -> dalam): CORS, tracing, transaction-id.
+	// CORS di luar tracing agar preflight OPTIONS tidak membuat span.
+	return middleware.Chain(mux,
+		middleware.CORSMiddleware("*"),
+		middleware.OtelMiddleware("user-service", "/sys/ping"),
+		middleware.TransactionID,
+	), nil
 }

@@ -150,8 +150,9 @@ func Load() (*Config, error) {
 
 // Default secret hanya untuk dev lokal. Di production wajib diganti (dicek validate).
 const (
-	defaultUserJWTSecret = "dev-user-jwt-secret-change-in-production"
-	defaultRefreshSecret = "dev-refresh-secret-change-in-production"
+	// Default KHUSUS dev lokal; validate() menolaknya saat APP_ENV=production (ada tesnya).
+	defaultUserJWTSecret = "dev-user-jwt-secret-change-in-production" // #nosec G101 -- default dev, ditolak di production
+	defaultRefreshSecret = "dev-refresh-secret-change-in-production"  // #nosec G101 -- default dev, ditolak di production
 )
 
 // validate menolak konfigurasi berbahaya sebelum service jalan (fail fast).

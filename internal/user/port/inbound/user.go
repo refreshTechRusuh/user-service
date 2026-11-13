@@ -20,5 +20,9 @@ type IUserUsecase interface {
 	Register(ctx context.Context, req dto.RegisterRequest) (dto.RegisterResponse, error)
 	Login(ctx context.Context, req dto.LoginRequest) (dto.LoginResponse, error)
 	Me(ctx context.Context, userID string) (dto.MeResponse, error)
-	Logout(ctx context.Context, req dto.LogoutRequest) error
+	// Logout mencabut sesi login (authToken + refreshToken sesi itu). Idempoten.
+	Logout(ctx context.Context, sessionID string) error
+	// Refresh menukar refreshToken dengan authToken + refreshToken baru (sesi sama).
+	// Refresh token lama langsung tidak berlaku (sekali pakai).
+	Refresh(ctx context.Context, req dto.RefreshRequest) (dto.LoginResponse, error)
 }

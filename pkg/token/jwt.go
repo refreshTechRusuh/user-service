@@ -10,14 +10,27 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 )
 
 // Claims = data yang kita taruh di dalam JWT.
 // RegisteredClaims menyediakan field standar (sub, exp, iat) dari spesifikasi JWT.
+//
+// SessionID (sid) mengikat authToken dan refreshToken ke SATU sesi login.
+// Logout mencabut sid, sehingga kedua token sesi itu ikut tidak berlaku.
+// Token lama (sebelum ada sid) punya SessionID kosong dan tidak bisa dicabut per sesi.
 type Claims struct {
-	Role string `json:"role"`
+	Role      string `json:"role"`
+	SessionID string `json:"sid,omitempty"`
 	jwt.RegisteredClaims
 }
+
+// NewSessionID membuat id sesi baru (satu per login).
+func NewSessionID() string { return uuid.NewString() }
+
+// SessionRevokeID = id yang disimpan di denylist untuk sebuah sesi.
+// Diberi prefix agar tidak tertukar dengan denylist jenis lain.
+func SessionRevokeID(sessionID string) string { return "sid:" + sessionID }
 
 // Generator membuat token memakai secret & masa berlaku dari config.
 // Dipakai usecase lewat interface/konkret; secret tak pernah keluar dari sini.
@@ -39,16 +52,21 @@ func NewGenerator(accessSecret, refreshSecret string, accessTTL, refreshTTL time
 }
 
 // GenerateAuthToken membuat access token (authToken) untuk userID + role.
-// Claim: sub=userID, role, exp=now+accessTTL, iat=now.
-func (g *Generator) GenerateAuthToken(userID, role string) (string, error) {
-	return g.sign(userID, role, g.accessSecret, g.accessTTL)
+// Claim: sub=userID, role, sid, exp=now+accessTTL, iat=now.
+func (g *Generator) GenerateAuthToken(userID, role, sessionID string) (string, error) {
+	return g.sign(userID, role, sessionID, g.accessSecret, g.accessTTL)
 }
 
 // GenerateRefreshToken membuat refresh token (TTL panjang) untuk userID.
-// Role tidak dibawa di refresh token (cuma untuk menerbitkan ulang authToken).
-func (g *Generator) GenerateRefreshToken(userID string) (string, error) {
-	return g.sign(userID, "", g.refreshSecret, g.refreshTTL)
+// Role tidak dibawa di refresh token (cuma untuk menerbitkan ulang authToken;
+// role dibaca ulang dari DB saat refresh). sid sama dengan authToken sesi itu.
+func (g *Generator) GenerateRefreshToken(userID, sessionID string) (string, error) {
+	return g.sign(userID, "", sessionID, g.refreshSecret, g.refreshTTL)
 }
+
+// RefreshTTL mengembalikan masa berlaku refreshToken (umur maksimum sebuah sesi).
+// Dipakai sebagai TTL denylist sesi saat logout.
+func (g *Generator) RefreshTTL() time.Duration { return g.refreshTTL }
 
 // AccessTTLSeconds mengembalikan masa berlaku authToken dalam detik
 // (dipakai untuk field expiresIn di response login).
@@ -68,10 +86,11 @@ func (g *Generator) VerifyRefreshToken(tokenStr string) (*Claims, error) {
 }
 
 // sign adalah inti pembuatan JWT: susun claims -> tandatangani dengan HMAC-SHA256.
-func (g *Generator) sign(userID, role string, secret []byte, ttl time.Duration) (string, error) {
+func (g *Generator) sign(userID, role, sessionID string, secret []byte, ttl time.Duration) (string, error) {
 	now := time.Now()
 	claims := Claims{
-		Role: role,
+		Role:      role,
+		SessionID: sessionID,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   userID,                           // sub = id user
 			IssuedAt:  jwt.NewNumericDate(now),          // iat = kapan dibuat

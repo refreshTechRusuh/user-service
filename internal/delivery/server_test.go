@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/refreshTechRusuh/user-service/internal/config"
+	"github.com/refreshTechRusuh/user-service/pkg/token"
 )
 
 // newHandler merakit service dengan Redis tiruan, Dukcapil tiruan, dan pool Postgres
@@ -70,6 +71,7 @@ func TestNew_ShouldProtectAuthenticatedRoutes(t *testing.T) {
 
 	for _, rt := range []struct{ method, path string }{
 		{http.MethodGet, "/auth/me"},
+		{http.MethodPost, "/auth/logout"},
 		{http.MethodPost, "/api/user/v1/member/create"},
 		{http.MethodGet, "/api/user/v1/member/list"},
 		{http.MethodPut, "/api/user/v1/member/update/m1"},
@@ -114,7 +116,8 @@ func TestNew_ShouldAllowPublicAuthEndpoints_ToReachHandlers(t *testing.T) {
 	// Body kosong → 400 dari handler (bukan 404/401) membuktikan route terpasang & publik.
 	assert.Equal(t, http.StatusBadRequest, serve(h, http.MethodPost, "/auth/login", `{}`).Code)
 	assert.Equal(t, http.StatusBadRequest, serve(h, http.MethodPost, "/auth/register", `{}`).Code)
-	assert.Equal(t, http.StatusOK, serve(h, http.MethodPost, "/auth/logout", `{}`).Code)
+	// Refresh publik (kredensialnya refreshToken di body): body kosong → 400 dari handler.
+	assert.Equal(t, http.StatusBadRequest, serve(h, http.MethodPost, "/auth/refresh", `{}`).Code)
 }
 
 func TestNew_ShouldReturn404_ForUnknownRoute(t *testing.T) {
@@ -242,4 +245,35 @@ func TestNew_Login_ShouldStillReachHandlerWithFullBody_AfterRateLimitPeek(t *tes
 
 	assert.Equal(t, http.StatusBadRequest, rr.Code)
 	assert.Contains(t, rr.Body.String(), "password wajib diisi")
+}
+
+// Alur sesi end-to-end lewat router asli + Redis tiruan: logout mencabut authToken
+// DAN refreshToken sesi itu, sedangkan sesi lain tidak terpengaruh.
+func TestNew_Logout_ShouldRevokeAuthTokenAndRefreshToken_OfThatSessionOnly(t *testing.T) {
+	var cfg *config.Config
+	h := newHandlerWith(t, noop, func(c *config.Config) { cfg = c })
+	gen := token.NewGenerator(cfg.JWT.AccessSecret, cfg.JWT.RefreshSecret, cfg.JWT.AccessTTL, cfg.JWT.RefreshTTL)
+	authTok, err := gen.GenerateAuthToken("u1", "customer", "sid-A")
+	require.NoError(t, err)
+	refreshTok, err := gen.GenerateRefreshToken("u1", "sid-A")
+	require.NoError(t, err)
+	otherAuth, err := gen.GenerateAuthToken("u1", "customer", "sid-B")
+	require.NoError(t, err)
+	withAuth := func(method, path, tok, body string) int {
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		if tok != "" {
+			req.Header.Set("Authorization", "Bearer "+tok)
+		}
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, req)
+		return rr.Code
+	}
+
+	assert.Equal(t, http.StatusOK, withAuth(http.MethodPost, "/auth/logout", authTok, ""), "logout dengan authToken sah")
+	assert.Equal(t, http.StatusUnauthorized, withAuth(http.MethodPost, "/auth/logout", authTok, ""), "authToken sesi itu sudah dicabut")
+	assert.Equal(t, http.StatusUnauthorized, withAuth(http.MethodGet, "/auth/me", authTok, ""), "endpoint ber-login menolak token yang dicabut")
+	assert.Equal(t, http.StatusUnauthorized,
+		withAuth(http.MethodPost, "/auth/refresh", "", `{"refreshToken":"`+refreshTok+`"}`),
+		"refreshToken sesi yang logout tidak boleh menerbitkan token baru")
+	assert.Equal(t, http.StatusOK, withAuth(http.MethodPost, "/auth/logout", otherAuth, ""), "sesi lain tidak terpengaruh")
 }

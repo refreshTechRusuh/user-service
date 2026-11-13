@@ -80,9 +80,18 @@ type MeResponse struct {
 	Role   entity.Role `json:"role"`
 }
 
-// ---- Logout ----
+// ---- Refresh ----
 
-// LogoutRequest = refresh token yang akan di-revoke.
-type LogoutRequest struct {
+// RefreshRequest = refresh token yang ditukar dengan pasangan token baru.
+// (Logout tidak punya body: sesi diambil dari authToken di header Authorization.)
+type RefreshRequest struct {
 	RefreshToken string `json:"refreshToken"`
+}
+
+// Validate memeriksa RefreshRequest di boundary.
+func (r RefreshRequest) Validate() []string {
+	if strings.TrimSpace(r.RefreshToken) == "" {
+		return []string{"refreshToken wajib diisi"}
+	}
+	return nil
 }

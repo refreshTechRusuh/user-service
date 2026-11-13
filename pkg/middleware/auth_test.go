@@ -1,6 +1,8 @@
 package middleware
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -36,17 +38,17 @@ func do(h http.Handler, authHeader string) *httptest.ResponseRecorder {
 
 func bearer(t *testing.T, g *token.Generator, uid, role string) string {
 	t.Helper()
-	tok, err := g.GenerateAuthToken(uid, role)
+	tok, err := g.GenerateAuthToken(uid, role, "sid-1")
 	require.NoError(t, err)
 	return "Bearer " + tok
 }
 
 func TestRequireAuth(t *testing.T) {
 	g := newGen()
-	h := RequireAuth(g)(echo)
-	expired, err := token.NewGenerator("access-secret", "refresh-secret", -time.Minute, time.Hour).GenerateAuthToken("u1", "customer")
+	h := RequireAuth(g, nil)(echo)
+	expired, err := token.NewGenerator("access-secret", "refresh-secret", -time.Minute, time.Hour).GenerateAuthToken("u1", "customer", "sid-1")
 	require.NoError(t, err)
-	wrongSecret, err := token.NewGenerator("lain", "refresh-secret", time.Hour, time.Hour).GenerateAuthToken("u1", "customer")
+	wrongSecret, err := token.NewGenerator("lain", "refresh-secret", time.Hour, time.Hour).GenerateAuthToken("u1", "customer", "sid-1")
 	require.NoError(t, err)
 
 	t.Run("tanpa header → 401", func(t *testing.T) {
@@ -78,7 +80,7 @@ func TestRequireAuth(t *testing.T) {
 
 func TestOptionalAuth_ShouldAlwaysContinue(t *testing.T) {
 	g := newGen()
-	h := OptionalAuth(g)(echo)
+	h := OptionalAuth(g, nil)(echo)
 
 	t.Run("tanpa token → lanjut sebagai guest", func(t *testing.T) {
 		rr := do(h, "")
@@ -98,7 +100,7 @@ func TestOptionalAuth_ShouldAlwaysContinue(t *testing.T) {
 
 func TestRequireRole(t *testing.T) {
 	g := newGen()
-	h := RequireRole(g, "admin")(echo)
+	h := RequireRole(g, nil, "admin")(echo)
 
 	t.Run("tanpa token → 401", func(t *testing.T) {
 		assert.Equal(t, http.StatusUnauthorized, do(h, "").Code)
@@ -154,4 +156,51 @@ func TestGetUserID_ShouldReportMissing_WhenContextEmpty(t *testing.T) {
 
 	assert.False(t, okU)
 	assert.False(t, okR)
+}
+
+// stubRevocation = SessionRevocation dengan daftar id yang dicabut / error terkontrol.
+type stubRevocation struct {
+	revoked map[string]bool
+	err     error
+}
+
+func (s stubRevocation) IsRevoked(_ context.Context, id string) (bool, error) {
+	return s.revoked[id], s.err
+}
+
+func TestSessionRevocation_ShouldRejectRevokedSession_InAuthMiddlewares(t *testing.T) {
+	g := newGen()
+	rev := stubRevocation{revoked: map[string]bool{token.SessionRevokeID("sid-1"): true}}
+	revoked := bearer(t, g, "u1", "admin") // sid-1 → dicabut
+	other, err := g.GenerateAuthToken("u1", "admin", "sid-2")
+	require.NoError(t, err)
+
+	t.Run("RequireAuth: sesi dicabut → 401", func(t *testing.T) {
+		assert.Equal(t, http.StatusUnauthorized, do(RequireAuth(g, rev)(echo), revoked).Code)
+	})
+	t.Run("RequireAuth: sesi lain tetap lolos", func(t *testing.T) {
+		assert.Equal(t, http.StatusOK, do(RequireAuth(g, rev)(echo), "Bearer "+other).Code)
+	})
+	t.Run("RequireRole: sesi dicabut → 401", func(t *testing.T) {
+		assert.Equal(t, http.StatusUnauthorized, do(RequireRole(g, rev, "admin")(echo), revoked).Code)
+	})
+	t.Run("OptionalAuth: sesi dicabut → lanjut sebagai guest", func(t *testing.T) {
+		rr := do(OptionalAuth(g, rev)(echo), revoked)
+		assert.Equal(t, http.StatusOK, rr.Code)
+		assert.Equal(t, "|", rr.Body.String(), "context tidak boleh terisi")
+	})
+}
+
+func TestSessionRevocation_ShouldFailOpen_WhenStoreErrors(t *testing.T) {
+	g := newGen()
+	rev := stubRevocation{err: errors.New("redis down")}
+	assert.Equal(t, http.StatusOK, do(RequireAuth(g, rev)(echo), bearer(t, g, "u1", "customer")).Code)
+}
+
+func TestSessionRevocation_ShouldSkipCheck_WhenTokenHasNoSessionID(t *testing.T) {
+	g := newGen()
+	legacy, err := g.GenerateAuthToken("u1", "customer", "")
+	require.NoError(t, err)
+	rev := stubRevocation{revoked: map[string]bool{token.SessionRevokeID(""): true}}
+	assert.Equal(t, http.StatusOK, do(RequireAuth(g, rev)(echo), "Bearer "+legacy).Code)
 }

@@ -5,8 +5,6 @@ package http
 
 import (
 	"encoding/json"
-	"errors"
-	"io"
 	"net/http"
 	"strings"
 
@@ -86,17 +84,33 @@ func (h *UserHandler) Me(w http.ResponseWriter, r *http.Request) {
 	apinizer.Success(w, "OK", res)
 }
 
-// Logout menangani POST /auth/logout. Revoke refresh token. Idempoten.
+// Logout menangani POST /auth/logout. Wajib authToken (RequireAuth); sesi yang
+// dicabut diambil dari klaim sid di token. Tanpa body. Idempoten.
 func (h *UserHandler) Logout(w http.ResponseWriter, r *http.Request) {
-	var req dto.LogoutRequest
-	// Body opsional: tanpa body (EOF) dianggap refreshToken kosong → logout no-op sukses.
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
-		apinizer.FailedBadRequest(w, msgInvalidBody)
-		return
-	}
-	if err := h.uc.Logout(r.Context(), req); err != nil {
+	sessionID, _ := middleware.GetSessionID(r.Context())
+	if err := h.uc.Logout(r.Context(), sessionID); err != nil {
 		apinizer.WriteError(w, err)
 		return
 	}
 	apinizer.Success(w, "logout berhasil", map[string]bool{"ok": true})
+}
+
+// Refresh menangani POST /auth/refresh. Tanpa authToken (justru dipakai saat
+// authToken sudah habis); kredensialnya adalah refreshToken di body.
+func (h *UserHandler) Refresh(w http.ResponseWriter, r *http.Request) {
+	var req dto.RefreshRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		apinizer.FailedBadRequest(w, msgInvalidBody)
+		return
+	}
+	if errs := req.Validate(); len(errs) > 0 {
+		apinizer.FailedBadRequest(w, strings.Join(errs, "; "))
+		return
+	}
+	res, err := h.uc.Refresh(r.Context(), req)
+	if err != nil {
+		apinizer.WriteError(w, err)
+		return
+	}
+	apinizer.Success(w, "token diperbarui", res)
 }

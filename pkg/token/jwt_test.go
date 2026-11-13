@@ -10,7 +10,7 @@ import (
 func TestAuthToken_ShouldCarryRole_AndVerifyWithSameSecret(t *testing.T) {
 	g := NewGenerator("user-secret", "refresh-secret", time.Hour, 24*time.Hour)
 	for _, role := range []string{"customer", "admin"} {
-		tok, err := g.GenerateAuthToken("user-1", role)
+		tok, err := g.GenerateAuthToken("user-1", role, "sid-1")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -18,21 +18,21 @@ func TestAuthToken_ShouldCarryRole_AndVerifyWithSameSecret(t *testing.T) {
 		if err != nil {
 			t.Fatalf("verify %s: %v", role, err)
 		}
-		if c.Subject != "user-1" || c.Role != role {
-			t.Errorf("claim = sub %q role %q; mau user-1 %s", c.Subject, c.Role, role)
+		if c.Subject != "user-1" || c.Role != role || c.SessionID != "sid-1" {
+			t.Errorf("claim = sub %q role %q sid %q; mau user-1 %s sid-1", c.Subject, c.Role, c.SessionID, role)
 		}
 	}
 }
 
 func TestRefreshToken_ShouldVerifyOnlyWithRefreshSecret(t *testing.T) {
 	g := NewGenerator("user-secret", "refresh-secret", time.Hour, 24*time.Hour)
-	refresh, err := g.GenerateRefreshToken("user-1")
+	refresh, err := g.GenerateRefreshToken("user-1", "sid-1")
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	c, err := g.VerifyRefreshToken(refresh)
-	if err != nil || c.Subject != "user-1" || c.Role != "" {
+	if err != nil || c.Subject != "user-1" || c.Role != "" || c.SessionID != "sid-1" {
 		t.Fatalf("claims=%+v err=%v; mau sub user-1 tanpa role", c, err)
 	}
 	if _, err := g.VerifyAuthToken(refresh); err == nil {
@@ -66,7 +66,7 @@ func TestVerifyAuthToken_ShouldReject_WhenSignedWithOtherSecret(t *testing.T) {
 // Refresh token tidak boleh dipakai sebagai authToken (secret berbeda).
 func TestVerifyAuthToken_ShouldReject_RefreshToken(t *testing.T) {
 	g := NewGenerator("user-secret", "refresh-secret", time.Hour, 24*time.Hour)
-	rt, _ := g.GenerateRefreshToken("user-1")
+	rt, _ := g.GenerateRefreshToken("user-1", "sid-1")
 	if _, err := g.VerifyAuthToken(rt); err == nil {
 		t.Fatal("refresh token diterima sebagai authToken")
 	}
@@ -81,5 +81,22 @@ func TestVerifyAuthToken_ShouldReject_AlgNone(t *testing.T) {
 	s, _ := unsigned.SignedString(jwt.UnsafeAllowNoneSignatureType)
 	if _, err := g.VerifyAuthToken(s); err == nil {
 		t.Fatal("token alg=none diterima")
+	}
+}
+
+func TestRefreshTTL_ShouldReturnConfiguredTTL(t *testing.T) {
+	g := NewGenerator("a", "b", time.Hour, 36*time.Hour)
+	if got := g.RefreshTTL(); got != 36*time.Hour {
+		t.Errorf("RefreshTTL = %v; mau 36h", got)
+	}
+}
+
+func TestSessionHelpers_ShouldGenerateUniqueIDs_AndPrefixRevokeID(t *testing.T) {
+	a, b := NewSessionID(), NewSessionID()
+	if a == "" || a == b {
+		t.Errorf("session id harus unik dan tidak kosong: %q %q", a, b)
+	}
+	if got := SessionRevokeID("abc"); got != "sid:abc" {
+		t.Errorf("SessionRevokeID = %q; mau sid:abc", got)
 	}
 }

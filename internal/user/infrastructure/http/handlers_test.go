@@ -26,14 +26,14 @@ var gen = token.NewGenerator("access-secret", "refresh-secret", time.Hour, 24*ti
 
 // authed membungkus handler dengan RequireAuth supaya userId masuk ke context.
 func authed(h http.HandlerFunc) http.Handler {
-	return middleware.RequireAuth(gen)(h)
+	return middleware.RequireAuth(gen, nil)(h)
 }
 
 func call(t *testing.T, h http.Handler, method, target, body string, withAuth bool) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(method, target, strings.NewReader(body))
 	if withAuth {
-		tok, err := gen.GenerateAuthToken("u1", "customer")
+		tok, err := gen.GenerateAuthToken("u1", "customer", "sid-1")
 		require.NoError(t, err)
 		req.Header.Set("Authorization", "Bearer "+tok)
 	}
@@ -61,7 +61,8 @@ type stubUserUC struct {
 	register func(dto.RegisterRequest) (dto.RegisterResponse, error)
 	login    func(dto.LoginRequest) (dto.LoginResponse, error)
 	me       func(string) (dto.MeResponse, error)
-	logout   func(dto.LogoutRequest) error
+	logout   func(string) error
+	refresh  func(dto.RefreshRequest) (dto.LoginResponse, error)
 }
 
 func (s stubUserUC) Register(_ context.Context, r dto.RegisterRequest) (dto.RegisterResponse, error) {
@@ -71,7 +72,10 @@ func (s stubUserUC) Login(_ context.Context, r dto.LoginRequest) (dto.LoginRespo
 	return s.login(r)
 }
 func (s stubUserUC) Me(_ context.Context, id string) (dto.MeResponse, error) { return s.me(id) }
-func (s stubUserUC) Logout(_ context.Context, r dto.LogoutRequest) error     { return s.logout(r) }
+func (s stubUserUC) Logout(_ context.Context, sid string) error              { return s.logout(sid) }
+func (s stubUserUC) Refresh(_ context.Context, r dto.RefreshRequest) (dto.LoginResponse, error) {
+	return s.refresh(r)
+}
 
 type stubMemberUC struct {
 	create func(string, dto.MemberRequest) (dto.MemberResponse, error)
@@ -185,28 +189,57 @@ func TestMeHandler(t *testing.T) {
 }
 
 func TestLogoutHandler(t *testing.T) {
-	var got dto.LogoutRequest
-	uc := stubUserUC{logout: func(r dto.LogoutRequest) error { got = r; return nil }}
-	h := http.HandlerFunc(NewUserHandler(uc).Logout)
+	var gotSID string
+	uc := stubUserUC{logout: func(sid string) error { gotSID = sid; return nil }}
+	h := authed(NewUserHandler(uc).Logout)
 
-	t.Run("dengan refreshToken → diteruskan", func(t *testing.T) {
-		rr := call(t, h, http.MethodPost, "/auth/logout", `{"refreshToken":"abc"}`, false)
+	t.Run("dengan authToken → sid dari token diteruskan ke usecase", func(t *testing.T) {
+		rr := call(t, h, http.MethodPost, "/auth/logout", "", true)
 		assert.Equal(t, http.StatusOK, rr.Code)
-		assert.Equal(t, "abc", got.RefreshToken)
+		assert.Equal(t, "sid-1", gotSID)
 	})
-	t.Run("tanpa body sama sekali → tetap 200 (refreshToken opsional)", func(t *testing.T) {
-		got = dto.LogoutRequest{RefreshToken: "sisa"}
+	t.Run("tanpa authToken → 401 dan usecase tidak dipanggil", func(t *testing.T) {
+		gotSID = ""
 		rr := call(t, h, http.MethodPost, "/auth/logout", "", false)
-		assert.Equal(t, http.StatusOK, rr.Code)
-		assert.Empty(t, got.RefreshToken)
-	})
-	t.Run("JSON rusak → 400", func(t *testing.T) {
-		assert.Equal(t, http.StatusBadRequest, call(t, h, http.MethodPost, "/auth/logout", `{`, false).Code)
+		assert.Equal(t, http.StatusUnauthorized, rr.Code)
+		assert.Empty(t, gotSID)
 	})
 	t.Run("usecase error → 500", func(t *testing.T) {
-		bad := stubUserUC{logout: func(dto.LogoutRequest) error { return apperror.Internal(errors.New("redis")) }}
-		rr := call(t, http.HandlerFunc(NewUserHandler(bad).Logout), http.MethodPost, "/auth/logout", `{"refreshToken":"x"}`, false)
+		bad := stubUserUC{logout: func(string) error { return apperror.Internal(errors.New("redis")) }}
+		rr := call(t, authed(NewUserHandler(bad).Logout), http.MethodPost, "/auth/logout", "", true)
 		assert.Equal(t, http.StatusInternalServerError, rr.Code)
+	})
+}
+
+func TestRefreshHandler(t *testing.T) {
+	var got dto.RefreshRequest
+	uc := stubUserUC{refresh: func(r dto.RefreshRequest) (dto.LoginResponse, error) {
+		got = r
+		return dto.LoginResponse{AuthToken: "a2", RefreshToken: "r2", Role: "customer", ExpiresIn: 3600}, nil
+	}}
+	h := http.HandlerFunc(NewUserHandler(uc).Refresh)
+
+	t.Run("sukses → 200 berisi pasangan token baru", func(t *testing.T) {
+		rr := call(t, h, http.MethodPost, "/auth/refresh", `{"refreshToken":"r1"}`, false)
+		assert.Equal(t, http.StatusOK, rr.Code)
+		assert.Equal(t, "r1", got.RefreshToken)
+		var data dto.LoginResponse
+		require.NoError(t, json.Unmarshal(env(t, rr).Data, &data))
+		assert.Equal(t, "a2", data.AuthToken)
+		assert.Equal(t, "r2", data.RefreshToken)
+	})
+	t.Run("JSON rusak → 400", func(t *testing.T) {
+		assert.Equal(t, http.StatusBadRequest, call(t, h, http.MethodPost, "/auth/refresh", `{`, false).Code)
+	})
+	t.Run("refreshToken kosong → 400", func(t *testing.T) {
+		assert.Equal(t, http.StatusBadRequest, call(t, h, http.MethodPost, "/auth/refresh", `{"refreshToken":"  "}`, false).Code)
+	})
+	t.Run("usecase menolak → 401", func(t *testing.T) {
+		bad := stubUserUC{refresh: func(dto.RefreshRequest) (dto.LoginResponse, error) {
+			return dto.LoginResponse{}, apperror.Unauthorized("Refresh token tidak valid")
+		}}
+		rr := call(t, http.HandlerFunc(NewUserHandler(bad).Refresh), http.MethodPost, "/auth/refresh", `{"refreshToken":"x"}`, false)
+		assert.Equal(t, http.StatusUnauthorized, rr.Code)
 	})
 }
 

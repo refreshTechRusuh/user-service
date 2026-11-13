@@ -70,7 +70,7 @@ func New(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, rdb *gored
 
 	// requireAuth = helper bungkus handler dengan middleware wajib-login.
 	requireAuth := func(next http.HandlerFunc) http.Handler {
-		return middleware.Chain(http.HandlerFunc(next), middleware.RequireAuth(tokenGen))
+		return middleware.Chain(http.HandlerFunc(next), middleware.RequireAuth(tokenGen, tokenStore))
 	}
 
 	mux := http.NewServeMux()
@@ -86,7 +86,13 @@ func New(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, rdb *gored
 		middleware.RateLimit(limiter, "login:ip", sec.LoginPerIPPerMin, time.Minute, middleware.ClientIPKey),
 		middleware.RateLimit(limiter, "login:email", sec.LoginPerEmailPerMin, time.Minute, middleware.BodyFieldKey("email")),
 	))
-	mux.HandleFunc("POST /auth/logout", h.Logout)
+	// Refresh: kredensial = refreshToken di body (authToken sudah habis). Dibatasi per IP
+	// memakai batas login.
+	mux.Handle("POST /auth/refresh", middleware.Chain(http.HandlerFunc(h.Refresh),
+		middleware.RateLimit(limiter, "refresh:ip", sec.LoginPerIPPerMin, time.Minute, middleware.ClientIPKey),
+	))
+	// Logout butuh authToken: sesi (sid) yang dicabut diambil dari token itu.
+	mux.Handle("POST /auth/logout", requireAuth(h.Logout))
 	// Butuh authToken
 	mux.Handle("GET /auth/me", requireAuth(h.Me))
 	// Verifikasi NIK ke Dukcapil (publik: guest ikut memakai; dibatasi rate limit)

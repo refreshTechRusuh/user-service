@@ -163,6 +163,8 @@ func TestLogin_ShouldIssueTokens_WhenCredentialsValid(t *testing.T) {
 	refresh, err := gen.VerifyRefreshToken(res.RefreshToken)
 	require.NoError(t, err)
 	assert.Equal(t, "u1", refresh.Subject)
+	assert.NotEmpty(t, claims.SessionID, "setiap login membuat sesi baru")
+	assert.Equal(t, claims.SessionID, refresh.SessionID, "authToken & refreshToken harus satu sesi")
 }
 
 func TestLogin_ShouldGiveSameError_ForUnknownEmailAndWrongPassword(t *testing.T) {
@@ -228,47 +230,148 @@ func TestMe_ShouldReturnInternal_WhenLookupFails(t *testing.T) {
 
 // ------------------------------------------------------------------ Logout
 
-func TestLogout_ShouldRevokeToken_WhenRefreshTokenValid(t *testing.T) {
-	gen := newGen()
-	store := &stubTokenStore{}
-	uc := NewUserUsecase(&stubUserRepo{}, gen, store)
-	refresh, err := gen.GenerateRefreshToken("u1")
-	require.NoError(t, err)
-
-	err = uc.Logout(context.Background(), dto.LogoutRequest{RefreshToken: refresh})
-
-	require.NoError(t, err)
-	assert.Equal(t, []string{refresh}, store.revoked)
-	assert.Greater(t, store.ttl, time.Duration(0), "TTL denylist = sisa umur token")
-}
-
-func TestLogout_ShouldSucceedWithoutRevoking_WhenRefreshTokenEmpty(t *testing.T) {
+func TestLogout_ShouldRevokeSession_WhenSessionIDGiven(t *testing.T) {
 	store := &stubTokenStore{}
 	uc := NewUserUsecase(&stubUserRepo{}, newGen(), store)
 
-	err := uc.Logout(context.Background(), dto.LogoutRequest{})
+	err := uc.Logout(context.Background(), "sid-1")
 
 	require.NoError(t, err)
-	assert.Empty(t, store.revoked)
+	assert.Equal(t, []string{token.SessionRevokeID("sid-1")}, store.revoked)
+	assert.Equal(t, 24*time.Hour, store.ttl, "TTL denylist = umur maksimum sesi (TTL refresh token)")
 }
 
-func TestLogout_ShouldSucceedWithoutRevoking_WhenRefreshTokenInvalid(t *testing.T) {
+func TestLogout_ShouldSucceedWithoutRevoking_WhenSessionIDEmpty(t *testing.T) {
 	store := &stubTokenStore{}
 	uc := NewUserUsecase(&stubUserRepo{}, newGen(), store)
 
-	err := uc.Logout(context.Background(), dto.LogoutRequest{RefreshToken: "sampah"})
+	err := uc.Logout(context.Background(), "")
 
-	require.NoError(t, err, "idempoten: token tak sah dianggap sudah tidak berlaku")
+	require.NoError(t, err, "token lama tanpa sid: tidak ada yang bisa dicabut")
 	assert.Empty(t, store.revoked)
 }
 
 func TestLogout_ShouldReturnInternal_WhenStoreFails(t *testing.T) {
-	gen := newGen()
-	uc := NewUserUsecase(&stubUserRepo{}, gen, &stubTokenStore{revokeErr: errors.New("redis")})
-	refresh, err := gen.GenerateRefreshToken("u1")
-	require.NoError(t, err)
+	uc := NewUserUsecase(&stubUserRepo{}, newGen(), &stubTokenStore{revokeErr: errors.New("redis")})
 
-	err = uc.Logout(context.Background(), dto.LogoutRequest{RefreshToken: refresh})
+	err := uc.Logout(context.Background(), "sid-1")
 
 	assert.Equal(t, apperror.ErrInternal, codeOf(t, err))
+}
+
+// ----------------------------------------------------------------- Refresh
+
+func userRepo(role entity.Role) *stubUserRepo {
+	return &stubUserRepo{findByID: func(id string) (entity.User, bool, error) {
+		return entity.User{ID: id, Email: "a@b.com", Role: role}, true, nil
+	}}
+}
+
+func TestRefresh_ShouldIssueNewPairInSameSession_AndConsumeOldRefreshToken(t *testing.T) {
+	gen := newGen()
+	store := &stubTokenStore{}
+	uc := NewUserUsecase(userRepo(entity.RoleAdmin), gen, store)
+	old, err := gen.GenerateRefreshToken("u1", "sid-1")
+	require.NoError(t, err)
+
+	res, err := uc.Refresh(context.Background(), dto.RefreshRequest{RefreshToken: old})
+
+	require.NoError(t, err)
+	auth, err := gen.VerifyAuthToken(res.AuthToken)
+	require.NoError(t, err)
+	assert.Equal(t, "u1", auth.Subject)
+	assert.Equal(t, "admin", auth.Role)
+	assert.Equal(t, "sid-1", auth.SessionID, "sesi tidak berganti saat refresh")
+	newRefresh, err := gen.VerifyRefreshToken(res.RefreshToken)
+	require.NoError(t, err)
+	assert.Equal(t, "sid-1", newRefresh.SessionID)
+	assert.Equal(t, 3600, res.ExpiresIn)
+	assert.Equal(t, entity.RoleAdmin, res.Role)
+	assert.Equal(t, []string{old}, store.revoked, "refresh token lama ditandai terpakai")
+}
+
+func TestRefresh_ShouldRejectSecondUse_WhenRefreshTokenAlreadyUsed(t *testing.T) {
+	gen := newGen()
+	uc := NewUserUsecase(userRepo(entity.RoleCustomer), gen, &stubTokenStore{})
+	old, err := gen.GenerateRefreshToken("u1", "sid-1")
+	require.NoError(t, err)
+
+	_, err = uc.Refresh(context.Background(), dto.RefreshRequest{RefreshToken: old})
+	require.NoError(t, err)
+	_, err = uc.Refresh(context.Background(), dto.RefreshRequest{RefreshToken: old})
+
+	assert.Equal(t, apperror.ErrUnauthorized, codeOf(t, err))
+}
+
+func TestRefresh_ShouldReject_WhenSessionLoggedOut(t *testing.T) {
+	gen := newGen()
+	store := &stubTokenStore{revoked: []string{token.SessionRevokeID("sid-1")}}
+	uc := NewUserUsecase(userRepo(entity.RoleCustomer), gen, store)
+	rt, err := gen.GenerateRefreshToken("u1", "sid-1")
+	require.NoError(t, err)
+
+	_, err = uc.Refresh(context.Background(), dto.RefreshRequest{RefreshToken: rt})
+
+	assert.Equal(t, apperror.ErrUnauthorized, codeOf(t, err), "logout harus mematikan refresh token sesi itu")
+}
+
+func TestRefresh_ShouldReject_WhenTokenInvalidOrWrongKind(t *testing.T) {
+	gen := newGen()
+	uc := NewUserUsecase(userRepo(entity.RoleCustomer), gen, &stubTokenStore{})
+	authTok, err := gen.GenerateAuthToken("u1", "customer", "sid-1")
+	require.NoError(t, err)
+	expired, err := token.NewGenerator("access-secret", "refresh-secret", time.Hour, -time.Minute).GenerateRefreshToken("u1", "sid-1")
+	require.NoError(t, err)
+
+	for name, tok := range map[string]string{"sampah": "sampah", "authToken dipakai sebagai refresh": authTok, "kedaluwarsa": expired} {
+		t.Run(name, func(t *testing.T) {
+			_, err := uc.Refresh(context.Background(), dto.RefreshRequest{RefreshToken: tok})
+			assert.Equal(t, apperror.ErrUnauthorized, codeOf(t, err))
+		})
+	}
+}
+
+func TestRefresh_ShouldReject_WhenUserNoLongerExists(t *testing.T) {
+	gen := newGen()
+	store := &stubTokenStore{}
+	uc := NewUserUsecase(&stubUserRepo{}, gen, store)
+	rt, err := gen.GenerateRefreshToken("hilang", "sid-1")
+	require.NoError(t, err)
+
+	_, err = uc.Refresh(context.Background(), dto.RefreshRequest{RefreshToken: rt})
+
+	assert.Equal(t, apperror.ErrUnauthorized, codeOf(t, err))
+	assert.Empty(t, store.revoked, "token tidak boleh hangus bila gagal sebelum diterbitkan ulang")
+}
+
+func TestRefresh_ShouldStartNewSession_WhenLegacyTokenHasNoSessionID(t *testing.T) {
+	gen := newGen()
+	uc := NewUserUsecase(userRepo(entity.RoleCustomer), gen, &stubTokenStore{})
+	legacy, err := gen.GenerateRefreshToken("u1", "")
+	require.NoError(t, err)
+
+	res, err := uc.Refresh(context.Background(), dto.RefreshRequest{RefreshToken: legacy})
+
+	require.NoError(t, err)
+	auth, err := gen.VerifyAuthToken(res.AuthToken)
+	require.NoError(t, err)
+	assert.NotEmpty(t, auth.SessionID)
+}
+
+func TestRefresh_ShouldReturnInternal_WhenStoreOrRepoFails(t *testing.T) {
+	gen := newGen()
+	rt, err := gen.GenerateRefreshToken("u1", "sid-1")
+	require.NoError(t, err)
+
+	t.Run("revoke gagal", func(t *testing.T) {
+		uc := NewUserUsecase(userRepo(entity.RoleCustomer), gen, &stubTokenStore{revokeErr: errors.New("redis")})
+		_, err := uc.Refresh(context.Background(), dto.RefreshRequest{RefreshToken: rt})
+		assert.Equal(t, apperror.ErrInternal, codeOf(t, err))
+	})
+	t.Run("lookup user gagal", func(t *testing.T) {
+		repo := &stubUserRepo{findByID: func(string) (entity.User, bool, error) { return entity.User{}, false, errors.New("db") }}
+		uc := NewUserUsecase(repo, gen, &stubTokenStore{})
+		_, err := uc.Refresh(context.Background(), dto.RefreshRequest{RefreshToken: rt})
+		assert.Equal(t, apperror.ErrInternal, codeOf(t, err))
+	})
 }

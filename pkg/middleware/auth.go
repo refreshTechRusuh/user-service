@@ -4,6 +4,7 @@ package middleware
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -18,7 +19,14 @@ type contextKey string
 const (
 	ctxUserID contextKey = "userId"
 	ctxRole   contextKey = "role"
+	ctxSID    contextKey = "sessionId"
 )
+
+// SessionRevocation = denylist sesi (diimplementasikan token store di Redis).
+// Boleh nil: pengecekan pencabutan dilewati (dipakai di test / service tanpa Redis).
+type SessionRevocation interface {
+	IsRevoked(ctx context.Context, id string) (bool, error)
+}
 
 // envelope JSON manual untuk balasan middleware (tak bisa pakai apinizer:
 // apinizer import middleware? tidak — tapi kita sengaja minimal di sini).
@@ -27,9 +35,9 @@ const (
 	bodyForbidden    = `{"status":"403","message":"Akses ditolak","data":{}}`
 )
 
-// RequireAuth MEWAJIBKAN authToken valid. Tanpa/invalid token → 401.
-// Bila valid, userId & role disimpan di context untuk dibaca handler.
-func RequireAuth(gen *token.Generator) func(http.Handler) http.Handler {
+// RequireAuth MEWAJIBKAN authToken valid DAN sesinya belum dicabut (logout).
+// Tanpa/invalid/dicabut → 401. Bila valid, userId, role & sessionId disimpan di context.
+func RequireAuth(gen *token.Generator, rev SessionRevocation) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			tokenStr := extractBearer(r)
@@ -38,11 +46,11 @@ func RequireAuth(gen *token.Generator) func(http.Handler) http.Handler {
 				return
 			}
 			claims, err := gen.VerifyAuthToken(tokenStr)
-			if err != nil {
+			if err != nil || sessionRevoked(r.Context(), rev, claims.SessionID) {
 				writeJSON(w, http.StatusUnauthorized, bodyUnauthorized)
 				return
 			}
-			ctx := withClaims(r.Context(), claims.Subject, claims.Role)
+			ctx := withClaims(r.Context(), claims.Subject, claims.Role, claims.SessionID)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
@@ -51,12 +59,12 @@ func RequireAuth(gen *token.Generator) func(http.Handler) http.Handler {
 // OptionalAuth: bila ada authToken valid → isi context (userId, role).
 // Bila tidak ada / tidak valid → LANJUT tanpa menolak (untuk guest journey).
 // Dipakai Queue & dibagikan ke BE-2.
-func OptionalAuth(gen *token.Generator) func(http.Handler) http.Handler {
+func OptionalAuth(gen *token.Generator, rev SessionRevocation) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if tokenStr := extractBearer(r); tokenStr != "" {
-				if claims, err := gen.VerifyAuthToken(tokenStr); err == nil {
-					r = r.WithContext(withClaims(r.Context(), claims.Subject, claims.Role))
+				if claims, err := gen.VerifyAuthToken(tokenStr); err == nil && !sessionRevoked(r.Context(), rev, claims.SessionID) {
+					r = r.WithContext(withClaims(r.Context(), claims.Subject, claims.Role, claims.SessionID))
 				}
 			}
 			next.ServeHTTP(w, r)
@@ -66,7 +74,7 @@ func OptionalAuth(gen *token.Generator) func(http.Handler) http.Handler {
 
 // RequireRole MEWAJIBKAN authToken valid DAN role tertentu (mis. "admin").
 // Dibagikan ke BE-2 untuk endpoint admin Event.
-func RequireRole(gen *token.Generator, role string) func(http.Handler) http.Handler {
+func RequireRole(gen *token.Generator, rev SessionRevocation, role string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			tokenStr := extractBearer(r)
@@ -75,7 +83,7 @@ func RequireRole(gen *token.Generator, role string) func(http.Handler) http.Hand
 				return
 			}
 			claims, err := gen.VerifyAuthToken(tokenStr)
-			if err != nil {
+			if err != nil || sessionRevoked(r.Context(), rev, claims.SessionID) {
 				writeJSON(w, http.StatusUnauthorized, bodyUnauthorized)
 				return
 			}
@@ -83,7 +91,7 @@ func RequireRole(gen *token.Generator, role string) func(http.Handler) http.Hand
 				writeJSON(w, http.StatusForbidden, bodyForbidden)
 				return
 			}
-			ctx := withClaims(r.Context(), claims.Subject, claims.Role)
+			ctx := withClaims(r.Context(), claims.Subject, claims.Role, claims.SessionID)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
@@ -123,12 +131,35 @@ func GetRole(ctx context.Context) (string, bool) {
 	return v, ok
 }
 
+// GetSessionID mengambil id sesi login dari context (kosong untuk token lama tanpa sid).
+func GetSessionID(ctx context.Context) (string, bool) {
+	v, ok := ctx.Value(ctxSID).(string)
+	return v, ok
+}
+
 // ---- internal ----
 
-func withClaims(ctx context.Context, userID, role string) context.Context {
+func withClaims(ctx context.Context, userID, role, sessionID string) context.Context {
 	ctx = context.WithValue(ctx, ctxUserID, userID)
 	ctx = context.WithValue(ctx, ctxRole, role)
+	ctx = context.WithValue(ctx, ctxSID, sessionID)
 	return ctx
+}
+
+// sessionRevoked true bila sesi sudah dicabut (logout).
+// rev nil atau sid kosong (token lama) → dianggap belum dicabut.
+// Redis error → fail-open (log warning) agar gangguan Redis tidak mematikan semua
+// endpoint ber-login; pola sama dengan rate limiter.
+func sessionRevoked(ctx context.Context, rev SessionRevocation, sessionID string) bool {
+	if rev == nil || sessionID == "" {
+		return false
+	}
+	revoked, err := rev.IsRevoked(ctx, token.SessionRevokeID(sessionID))
+	if err != nil {
+		slog.WarnContext(ctx, "cek pencabutan sesi gagal, fail-open", "err", err)
+		return false
+	}
+	return revoked
 }
 
 func extractBearer(r *http.Request) string {

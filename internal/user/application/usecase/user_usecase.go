@@ -17,7 +17,8 @@ import (
 )
 
 // UserUsecase memegang dependency (lewat interface outbound, bukan konkret).
-// tokenGen: menerbitkan/verifikasi JWT. tokenStore: denylist refresh token (logout).
+// tokenGen: menerbitkan/verifikasi JWT. tokenStore: denylist (sesi yang di-logout
+// dan refresh token yang sudah dipakai).
 type UserUsecase struct {
 	repo       outbound.IUserRepository
 	tokenGen   *token.Generator
@@ -84,16 +85,21 @@ func (u *UserUsecase) Login(ctx context.Context, req dto.LoginRequest) (dto.Logi
 		return dto.LoginResponse{}, apperror.InvalidCredentials()
 	}
 
-	// Kredensial valid → terbitkan token.
-	authToken, err := u.tokenGen.GenerateAuthToken(user.ID, string(user.Role))
-	if err != nil {
-		return dto.LoginResponse{}, apperror.Internal(err)
-	}
-	refreshToken, err := u.tokenGen.GenerateRefreshToken(user.ID)
-	if err != nil {
-		return dto.LoginResponse{}, apperror.Internal(err)
-	}
+	// Kredensial valid → sesi baru (satu sid per login) → terbitkan token.
+	return u.issueTokens(user, token.NewSessionID())
+}
 
+// issueTokens menerbitkan pasangan authToken + refreshToken untuk satu sesi (sid).
+// Dipakai Login (sid baru) dan Refresh (sid sama dengan sesi sebelumnya).
+func (u *UserUsecase) issueTokens(user entity.User, sessionID string) (dto.LoginResponse, error) {
+	authToken, err := u.tokenGen.GenerateAuthToken(user.ID, string(user.Role), sessionID)
+	if err != nil {
+		return dto.LoginResponse{}, apperror.Internal(err)
+	}
+	refreshToken, err := u.tokenGen.GenerateRefreshToken(user.ID, sessionID)
+	if err != nil {
+		return dto.LoginResponse{}, apperror.Internal(err)
+	}
 	return dto.LoginResponse{
 		AuthToken:    authToken,
 		RefreshToken: refreshToken,
@@ -119,26 +125,70 @@ func (u *UserUsecase) Me(ctx context.Context, userID string) (dto.MeResponse, er
 	}, nil
 }
 
-// Logout mencabut (revoke) refresh token: masukkan ke denylist Redis dengan TTL
-// = sisa umur token. Idempoten — memanggil berkali-kali tetap sukses.
-//
-// refreshToken OPSIONAL: bila kosong (klien sudah kehilangan token / sesi habis)
-// tidak ada yang perlu dicabut, jadi logout tetap sukses (no-op idempoten).
-func (u *UserUsecase) Logout(ctx context.Context, req dto.LogoutRequest) error {
-	if req.RefreshToken == "" {
+// Logout mencabut sesi login: sid masuk denylist Redis selama umur maksimum sesi
+// (= TTL refreshToken). Setelah itu authToken DAN refreshToken sesi tersebut ditolak.
+// Idempoten. sessionID kosong (token lama tanpa sid) → tidak ada yang dicabut, tetap sukses.
+func (u *UserUsecase) Logout(ctx context.Context, sessionID string) error {
+	if sessionID == "" {
 		return nil
 	}
-	// Verifikasi dulu: hanya token kita yang sah yang boleh (dan perlu) dicabut.
-	claims, err := u.tokenGen.VerifyRefreshToken(req.RefreshToken)
-	if err != nil {
-		// Token tak valid/kedaluwarsa → anggap sudah "tidak berlaku" → sukses idempoten.
-		return nil
-	}
-	// TTL = sisa waktu sampai exp; setelah itu key denylist auto-hapus.
-	ttl := time.Until(claims.ExpiresAt.Time)
-	// tokenID = refresh token itu sendiri (unik per sesi).
-	if err := u.tokenStore.Revoke(ctx, req.RefreshToken, ttl); err != nil {
+	if err := u.tokenStore.Revoke(ctx, token.SessionRevokeID(sessionID), u.tokenGen.RefreshTTL()); err != nil {
 		return apperror.Internal(err)
 	}
 	return nil
 }
+
+// Refresh menukar refreshToken dengan authToken + refreshToken baru.
+//
+// Urutan: verifikasi token → sesi belum di-logout → refresh token belum pernah
+// dipakai → user masih ada (role dibaca ulang dari DB) → tandai refresh token lama
+// terpakai → terbitkan pasangan baru dengan sid yang sama.
+// Refresh token bersifat sekali pakai; memakainya lagi ditolak.
+func (u *UserUsecase) Refresh(ctx context.Context, req dto.RefreshRequest) (dto.LoginResponse, error) {
+	claims, err := u.tokenGen.VerifyRefreshToken(req.RefreshToken)
+	if err != nil {
+		return dto.LoginResponse{}, apperror.Unauthorized(msgRefreshInvalid)
+	}
+
+	if claims.SessionID != "" {
+		loggedOut, err := u.tokenStore.IsRevoked(ctx, token.SessionRevokeID(claims.SessionID))
+		if err != nil {
+			return dto.LoginResponse{}, apperror.Internal(err)
+		}
+		if loggedOut {
+			return dto.LoginResponse{}, apperror.Unauthorized(msgRefreshInvalid)
+		}
+	}
+
+	used, err := u.tokenStore.IsRevoked(ctx, req.RefreshToken)
+	if err != nil {
+		return dto.LoginResponse{}, apperror.Internal(err)
+	}
+	if used {
+		return dto.LoginResponse{}, apperror.Unauthorized(msgRefreshInvalid)
+	}
+
+	user, found, err := u.repo.FindByID(ctx, claims.Subject)
+	if err != nil {
+		return dto.LoginResponse{}, apperror.Internal(err)
+	}
+	if !found {
+		return dto.LoginResponse{}, apperror.Unauthorized(msgRefreshInvalid)
+	}
+
+	// Tandai refresh token lama terpakai (TTL = sisa umurnya) SEBELUM menerbitkan yang baru.
+	if err := u.tokenStore.Revoke(ctx, req.RefreshToken, time.Until(claims.ExpiresAt.Time)); err != nil {
+		return dto.LoginResponse{}, apperror.Internal(err)
+	}
+
+	// Refresh token lama (sebelum ada sid) tidak punya sesi: mulai sesi baru.
+	sessionID := claims.SessionID
+	if sessionID == "" {
+		sessionID = token.NewSessionID()
+	}
+	return u.issueTokens(user, sessionID)
+}
+
+// msgRefreshInvalid sengaja satu pesan untuk semua penyebab (token rusak, sesi
+// logout, sudah dipakai, user hilang) agar tidak membocorkan alasan ke penyerang.
+const msgRefreshInvalid = "Refresh token tidak valid"

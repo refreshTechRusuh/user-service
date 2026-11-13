@@ -22,7 +22,7 @@ func NewHistoryHandler(uc inbound.IHistoryUsecase) *HistoryHandler {
 func (h *HistoryHandler) List(w http.ResponseWriter, r *http.Request) {
 	userID, ok := middleware.GetUserID(r.Context())
 	if !ok {
-		apinizer.WriteError(w, apperror.Unauthorized("Sesi tidak valid"))
+		apinizer.WriteError(w, apperror.Unauthorized(msgInvalidSession))
 		return
 	}
 	page := atoiDefault(r.URL.Query().Get("page"), 1)

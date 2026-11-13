@@ -30,7 +30,7 @@ func NewUserHandler(uc inbound.IUserUsecase) *UserHandler {
 func (h *UserHandler) Register(w http.ResponseWriter, r *http.Request) {
 	var req dto.RegisterRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		apinizer.FailedBadRequest(w, "body tidak valid")
+		apinizer.FailedBadRequest(w, msgInvalidBody)
 		return
 	}
 
@@ -53,7 +53,7 @@ func (h *UserHandler) Register(w http.ResponseWriter, r *http.Request) {
 func (h *UserHandler) Login(w http.ResponseWriter, r *http.Request) {
 	var req dto.LoginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		apinizer.FailedBadRequest(w, "body tidak valid")
+		apinizer.FailedBadRequest(w, msgInvalidBody)
 		return
 	}
 
@@ -75,7 +75,7 @@ func (h *UserHandler) Login(w http.ResponseWriter, r *http.Request) {
 func (h *UserHandler) Me(w http.ResponseWriter, r *http.Request) {
 	userID, ok := middleware.GetUserID(r.Context())
 	if !ok {
-		apinizer.WriteError(w, apperror.Unauthorized("Sesi tidak valid"))
+		apinizer.WriteError(w, apperror.Unauthorized(msgInvalidSession))
 		return
 	}
 	res, err := h.uc.Me(r.Context(), userID)
@@ -91,7 +91,7 @@ func (h *UserHandler) Logout(w http.ResponseWriter, r *http.Request) {
 	var req dto.LogoutRequest
 	// Body opsional: tanpa body (EOF) dianggap refreshToken kosong → logout no-op sukses.
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
-		apinizer.FailedBadRequest(w, "body tidak valid")
+		apinizer.FailedBadRequest(w, msgInvalidBody)
 		return
 	}
 	if err := h.uc.Logout(r.Context(), req); err != nil {

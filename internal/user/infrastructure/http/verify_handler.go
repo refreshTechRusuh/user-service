@@ -52,7 +52,7 @@ func (h *VerifyHandler) Verify(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxVerifyBody)
 	var req dto.VerifyNIKRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		apinizer.FailedBadRequest(w, "body tidak valid")
+		apinizer.FailedBadRequest(w, msgInvalidBody)
 		return
 	}
 	if errs := req.Validate(); len(errs) > 0 {

@@ -25,12 +25,12 @@ func NewMemberHandler(uc inbound.IMemberUsecase) *MemberHandler {
 func (h *MemberHandler) Create(w http.ResponseWriter, r *http.Request) {
 	userID, ok := middleware.GetUserID(r.Context())
 	if !ok {
-		apinizer.WriteError(w, apperror.Unauthorized("Sesi tidak valid"))
+		apinizer.WriteError(w, apperror.Unauthorized(msgInvalidSession))
 		return
 	}
 	var req dto.MemberRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		apinizer.FailedBadRequest(w, "body tidak valid")
+		apinizer.FailedBadRequest(w, msgInvalidBody)
 		return
 	}
 	if errs := req.Validate(); len(errs) > 0 {
@@ -49,7 +49,7 @@ func (h *MemberHandler) Create(w http.ResponseWriter, r *http.Request) {
 func (h *MemberHandler) List(w http.ResponseWriter, r *http.Request) {
 	userID, ok := middleware.GetUserID(r.Context())
 	if !ok {
-		apinizer.WriteError(w, apperror.Unauthorized("Sesi tidak valid"))
+		apinizer.WriteError(w, apperror.Unauthorized(msgInvalidSession))
 		return
 	}
 	res, err := h.uc.List(r.Context(), userID)
@@ -64,13 +64,13 @@ func (h *MemberHandler) List(w http.ResponseWriter, r *http.Request) {
 func (h *MemberHandler) Update(w http.ResponseWriter, r *http.Request) {
 	userID, ok := middleware.GetUserID(r.Context())
 	if !ok {
-		apinizer.WriteError(w, apperror.Unauthorized("Sesi tidak valid"))
+		apinizer.WriteError(w, apperror.Unauthorized(msgInvalidSession))
 		return
 	}
 	memberID := r.PathValue("id")
 	var req dto.MemberRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		apinizer.FailedBadRequest(w, "body tidak valid")
+		apinizer.FailedBadRequest(w, msgInvalidBody)
 		return
 	}
 	if errs := req.Validate(); len(errs) > 0 {
@@ -89,7 +89,7 @@ func (h *MemberHandler) Update(w http.ResponseWriter, r *http.Request) {
 func (h *MemberHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	userID, ok := middleware.GetUserID(r.Context())
 	if !ok {
-		apinizer.WriteError(w, apperror.Unauthorized("Sesi tidak valid"))
+		apinizer.WriteError(w, apperror.Unauthorized(msgInvalidSession))
 		return
 	}
 	memberID := r.PathValue("id")

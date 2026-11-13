@@ -15,7 +15,7 @@ const (
 
 	// 401
 	ErrUnauthorized       ErrorCode = "UNAUTHORIZED"
-	ErrInvalidCredentials ErrorCode = "INVALID_CREDENTIALS"
+	ErrInvalidCredentials ErrorCode = "INVALID_CREDENTIALS" // #nosec G101 -- nama kode error, bukan kredensial
 	ErrTokenInvalid       ErrorCode = "TOKEN_INVALID"
 	ErrTokenExpired       ErrorCode = "TOKEN_EXPIRED"
 

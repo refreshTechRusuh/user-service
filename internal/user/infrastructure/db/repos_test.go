@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"errors"
+	"github.com/refreshTechRusuh/user-service/internal/user/domain/dto"
 	"testing"
 	"time"
 
@@ -227,20 +228,61 @@ func TestMemberRepo_Delete(t *testing.T) {
 // ---------------------------------------------------------- HistoryRepository
 
 func TestHistoryRepo_ListByUser(t *testing.T) {
-	t.Run("total + item", func(t *testing.T) {
+	bookingRow := func(id, event, status, method string, tickets int, total int64) []any {
+		return []any{id, event, "https://poster/" + id, status, method, tickets, total, "2026-11-01T10:00:00+07"}
+	}
+
+	t.Run("total + item + rincian tiket", func(t *testing.T) {
 		f := newFake(t).
 			expectQueryRow("SELECT COUNT", []any{"u1"}, 5).
 			expectQuery("FROM booking b", []any{"u1", 2, 0}, [][]any{
-				{"b1", "Konser A", "PAID", 2, int64(3000000), "2026-11-01T10:00:00+07"},
+				bookingRow("b1", "Konser A", "PAID", "bank_transfer", 2, 3000000),
+				bookingRow("b2", "Konser B", "HELD", "", 1, 500000),
+			}).
+			expectQuery("FROM booking_item bi", []any{[]string{"b1", "b2"}}, [][]any{
+				{"b1", "t1", "3273000000000001", "VIP", int64(1500000)},
+				{"b1", "t2", "3273000000000002", "VIP", int64(1500000)},
+				{"b2", "t3", "3273000000000003", "Festival", int64(500000)},
 			})
 
 		items, total, err := NewHistoryRepository(f).ListByUser(context.Background(), "u1", 2, 0)
 
 		require.NoError(t, err)
 		assert.Equal(t, 5, total)
-		require.Len(t, items, 1)
+		require.Len(t, items, 2)
 		assert.Equal(t, "Konser A", items[0].EventName)
+		assert.Equal(t, "https://poster/b1", items[0].PosterURL)
+		assert.Equal(t, "bank_transfer", items[0].PaymentMethod)
 		assert.Equal(t, int64(3000000), items[0].Total)
+		require.Len(t, items[0].TicketDetails, 2)
+		assert.Equal(t, dto.TicketDetail{TicketID: "t1", NIK: "3273000000000001", CategoryName: "VIP", Price: 1500000}, items[0].TicketDetails[0])
+		require.Len(t, items[1].TicketDetails, 1)
+		assert.Equal(t, "Festival", items[1].TicketDetails[0].CategoryName)
+		assert.Empty(t, items[1].PaymentMethod)
+	})
+	t.Run("tanpa booking: tidak query rincian, items kosong", func(t *testing.T) {
+		f := newFake(t).
+			expectQueryRow("SELECT COUNT", []any{"u1"}, 0).
+			expectQuery("FROM booking b", []any{"u1", 2, 0}, nil)
+
+		items, total, err := NewHistoryRepository(f).ListByUser(context.Background(), "u1", 2, 0)
+
+		require.NoError(t, err)
+		assert.Equal(t, 0, total)
+		assert.Empty(t, items)
+	})
+	t.Run("booking tanpa item: ticketDetails array kosong (bukan null)", func(t *testing.T) {
+		f := newFake(t).
+			expectQueryRow("SELECT COUNT", []any{"u1"}, 1).
+			expectQuery("FROM booking b", []any{"u1", 2, 0}, [][]any{bookingRow("b1", "K", "EXPIRED", "", 0, 0)}).
+			expectQuery("FROM booking_item bi", []any{[]string{"b1"}}, nil)
+
+		items, _, err := NewHistoryRepository(f).ListByUser(context.Background(), "u1", 2, 0)
+
+		require.NoError(t, err)
+		require.Len(t, items, 1)
+		assert.NotNil(t, items[0].TicketDetails)
+		assert.Empty(t, items[0].TicketDetails)
 	})
 	t.Run("count gagal", func(t *testing.T) {
 		f := newFake(t).expectQueryRowErr("SELECT COUNT", []any{"u1"}, errDB)
@@ -254,12 +296,35 @@ func TestHistoryRepo_ListByUser(t *testing.T) {
 		_, _, err := NewHistoryRepository(f).ListByUser(context.Background(), "u1", 2, 0)
 		assert.ErrorIs(t, err, errDB)
 	})
-	t.Run("scan gagal", func(t *testing.T) {
+	t.Run("scan item gagal", func(t *testing.T) {
 		f := newFake(t).
 			expectQueryRow("SELECT COUNT", []any{"u1"}, 1).
 			expectQuery("FROM booking b", []any{"u1", 2, 0}, [][]any{
-				{"b1", "K", "PAID", "bukan-angka", int64(1), "t"},
+				{"b1", "K", "p", "PAID", "", "bukan-angka", int64(1), "t"},
 			})
+		_, _, err := NewHistoryRepository(f).ListByUser(context.Background(), "u1", 2, 0)
+		assert.Error(t, err)
+	})
+	t.Run("rows item error", func(t *testing.T) {
+		f := newFake(t).
+			expectQueryRow("SELECT COUNT", []any{"u1"}, 1).
+			expectQueryRowErrAfter("FROM booking b", []any{"u1", 2, 0}, nil, errDB)
+		_, _, err := NewHistoryRepository(f).ListByUser(context.Background(), "u1", 2, 0)
+		assert.ErrorIs(t, err, errDB)
+	})
+	t.Run("query rincian gagal", func(t *testing.T) {
+		f := newFake(t).
+			expectQueryRow("SELECT COUNT", []any{"u1"}, 1).
+			expectQuery("FROM booking b", []any{"u1", 2, 0}, [][]any{bookingRow("b1", "K", "PAID", "qris", 1, 1)}).
+			expectQueryErr("FROM booking_item bi", []any{[]string{"b1"}}, errDB)
+		_, _, err := NewHistoryRepository(f).ListByUser(context.Background(), "u1", 2, 0)
+		assert.ErrorIs(t, err, errDB)
+	})
+	t.Run("scan rincian gagal", func(t *testing.T) {
+		f := newFake(t).
+			expectQueryRow("SELECT COUNT", []any{"u1"}, 1).
+			expectQuery("FROM booking b", []any{"u1", 2, 0}, [][]any{bookingRow("b1", "K", "PAID", "qris", 1, 1)}).
+			expectQuery("FROM booking_item bi", []any{[]string{"b1"}}, [][]any{{"b1", "t1", "nik", "VIP", "bukan-angka"}})
 		_, _, err := NewHistoryRepository(f).ListByUser(context.Background(), "u1", 2, 0)
 		assert.Error(t, err)
 	})
